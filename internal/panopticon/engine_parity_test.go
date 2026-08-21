@@ -204,13 +204,13 @@ func TestSubmitKeyIgnoresTransientIdleBeforeResult(t *testing.T) {
 	}
 }
 
-func TestSubmitKeyKeepsWaitingAfterInitialWorkingTimeout(t *testing.T) {
+func TestSubmitKeyWorkingTimeoutFallsBackToTimeoutHandling(t *testing.T) {
 	fixture := newEngineFixture(t, "delayed-working-before-result", "developer", "worktree", "ctrl+enter", nil, nil, 30)
 	state := mustCreate(t, fixture)
-	if stringValue(state["status"]) != "completed" || stringValue(stepState(state, "step")["status"]) != "completed" {
+	if stringValue(state["status"]) != "failed" || stringValue(stepState(state, "step")["status"]) != "timed_out" || stepErrorCode(state, "step") != "timeout" {
 		t.Fatalf("state=%v step=%v error=%v", state["status"], stepState(state, "step")["status"], state["error"])
 	}
-	if calls := filterCalls(herdrCalls(t, fixture.logPath), "agent", "wait"); len(calls) != 3 {
+	if calls := filterCalls(herdrCalls(t, fixture.logPath), "agent", "wait"); len(calls) != 1 || argAfter(calls[0], "--until") != "working" {
 		t.Fatalf("wait calls=%#v", calls)
 	}
 }
@@ -538,7 +538,7 @@ func TestChangedFilesMustStayRelativeToWorktree(t *testing.T) {
 	}
 }
 
-func TestRepoAndDependenciesArtifactsAllowRepositoryAndSiblingWorktrees(t *testing.T) {
+func TestArtifactsAreLimitedToRunDirAndWorktreeRegardlessOfReadPolicy(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	active := filepath.Join(root, "active")
@@ -548,6 +548,10 @@ func TestRepoAndDependenciesArtifactsAllowRepositoryAndSiblingWorktrees(t *testi
 	runGit(t, repo, "worktree", "add", "--quiet", "--detach", sibling)
 	linkedArtifact := filepath.Join(sibling, "linked-report.txt")
 	if err := os.WriteFile(linkedArtifact, []byte("linked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	worktreeArtifact := filepath.Join(active, "worktree-report.txt")
+	if err := os.WriteFile(worktreeArtifact, []byte("worktree\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	state := map[string]any{
@@ -562,17 +566,23 @@ func TestRepoAndDependenciesArtifactsAllowRepositoryAndSiblingWorktrees(t *testi
 		"schema_version": 1, "run_id": "run-test", "step_id": "step", "role": "scout",
 		"status": "success", "summary": "ok",
 		"artifacts": []any{
-			map[string]any{"path": filepath.Join(repo, "repo-report.txt"), "kind": "report", "description": "repo"},
-			map[string]any{"path": linkedArtifact, "kind": "report", "description": "linked"},
+			map[string]any{"path": worktreeArtifact, "kind": "report", "description": "worktree"},
 		},
 		"changed_files": []any{}, "tests": []any{},
 	}
 	if valid, reason := validateResult(result, spec, state); !valid {
-		t.Fatalf("repo-and-dependencies result rejected: %s", reason)
+		t.Fatalf("worktree artifact rejected: %s", reason)
+	}
+	for _, artifact := range []string{filepath.Join(repo, "repo-report.txt"), linkedArtifact} {
+		result["artifacts"] = []any{map[string]any{"path": artifact, "kind": "report", "description": "outside"}}
+		if valid, _ := validateResult(result, spec, state); valid {
+			t.Fatalf("repo-and-dependencies accepted artifact outside run/worktree: %s", artifact)
+		}
 	}
 	spec.ReadPolicy = "worktree"
-	if valid, _ := validateResult(result, spec, state); valid {
-		t.Fatal("worktree-only policy accepted repository artifact")
+	result["artifacts"] = []any{map[string]any{"path": worktreeArtifact, "kind": "report", "description": "worktree"}}
+	if valid, _ := validateResult(result, spec, state); !valid {
+		t.Fatal("worktree-only policy rejected worktree artifact")
 	}
 }
 

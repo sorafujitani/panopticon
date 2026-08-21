@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -418,6 +419,45 @@ func readJSON(path string) (any, error) {
 	return value, nil
 }
 
+// staleLockGrace より新しいロックは、別プロセスが O_EXCL 作成直後で
+// まだ内容を書き切っていない可能性があるため回収しない。
+const staleLockGrace = 10 * time.Second
+
+type lockPayload struct {
+	pid       int64
+	createdAt string
+}
+
+func readLockPayload(path string) (lockPayload, fs.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return lockPayload{}, nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return lockPayload{}, nil, err
+	}
+	decoder := json.NewDecoder(file)
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return lockPayload{}, info, err
+	}
+	table, ok := value.(map[string]any)
+	if !ok {
+		return lockPayload{}, info, stateError("run lock payload is not an object: %s", path)
+	}
+	payload := lockPayload{}
+	if number, ok := table["pid"].(json.Number); ok {
+		payload.pid, _ = number.Int64()
+	}
+	if text, ok := table["created_at"].(string); ok {
+		payload.createdAt = text
+	}
+	return payload, info, nil
+}
+
 type RunLock struct {
 	path string
 	held bool
@@ -444,17 +484,19 @@ func (lock *RunLock) acquire() error {
 		if !errors.Is(err, os.ErrExist) {
 			return stateError("cannot acquire run lock: %s: %v", lock.path, err)
 		}
-		existing, readErr := readJSON(lock.path)
-		pid := int64(0)
-		if readErr == nil {
-			if table, ok := existing.(map[string]any); ok {
-				if number, ok := table["pid"].(json.Number); ok {
-					pid, _ = number.Int64()
-				}
-			}
+		existing, info, readErr := readLockPayload(lock.path)
+		if readErr == nil && pidAlive(existing.pid) {
+			return stateError("run is already active in another process (pid=%d)", existing.pid)
 		}
-		if pidAlive(pid) {
-			return stateError("run is already active in another process (pid=%d)", pid)
+		// 空や部分書き込みのロックは生存中の別プロセスが書き込み中の可能性があるため、
+		// 新鮮なロックは pid を解釈できても回収しない。
+		if readErr != nil || time.Since(info.ModTime()) < staleLockGrace {
+			return stateError("cannot acquire run lock: %s", lock.path)
+		}
+		// 削除前に読み直し、同一内容・同一ファイルであることを確認してから回収する。
+		rechecked, recheckInfo, recheckErr := readLockPayload(lock.path)
+		if recheckErr != nil || rechecked != existing || !os.SameFile(info, recheckInfo) {
+			return stateError("cannot acquire run lock: %s", lock.path)
 		}
 		_ = os.Remove(lock.path)
 	}

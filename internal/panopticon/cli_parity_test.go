@@ -347,3 +347,36 @@ func TestStatusAndCancelReturnCompactSnapshots(t *testing.T) {
 		t.Fatal("events leaked from cancel")
 	}
 }
+
+// Python argparse allows flags to appear after positional arguments; the
+// flags must not be swallowed into the positional task string.
+func TestDryRunParsesFlagsAfterPositionalTask(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HERDR_ENV", "1")
+	t.Setenv("PANOPTICON_STATE_DIR", filepath.Join(root, "runs"))
+	code, stdout := captureMain(t, []string{"dry-run", "fix the login bug", "--no-worktree", "--state-root", filepath.Join(root, "runs")})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout=%q err=%v", stdout, err)
+	}
+	if code != 0 {
+		t.Fatalf("code=%d payload=%v", code, payload)
+	}
+	if stringValue(payload["task"]) != "fix the login bug" {
+		t.Fatalf("task=%v (flags leaked into positional)", payload["task"])
+	}
+	worktree := mapValue(payload["worktree"])
+	if stringValue(worktree["mode"]) != "existing repo (explicit --no-worktree)" {
+		t.Fatalf("worktree mode=%v (--no-worktree ignored)", worktree["mode"])
+	}
+}
+
+// Python argparse exits with 2 on usage errors (missing or unknown command).
+func TestMainReturnsUsageExitCodeForMissingOrUnknownCommand(t *testing.T) {
+	if code, _ := captureMain(t, []string{}); code != 2 {
+		t.Fatalf("missing command: code=%d want 2", code)
+	}
+	if code, _ := captureMain(t, []string{"bogus-command"}); code != 2 {
+		t.Fatalf("unknown command: code=%d want 2", code)
+	}
+}

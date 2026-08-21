@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunStoreAtomicStateAndLatestOrdering(t *testing.T) {
@@ -208,5 +210,116 @@ func TestCompactStateCollapsesUnknownErrorDictToMessage(t *testing.T) {
 	}
 	if stringValue(mapValue(mapValue(payload["steps"].(map[string]any)["step"])["error"])["message"]) != `{"details":"unknown"}` {
 		t.Fatalf("step=%v", payload["steps"])
+	}
+}
+
+func finishedProcessPID(t *testing.T) int64 {
+	t.Helper()
+	command := exec.Command("true")
+	if err := command.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return int64(command.Process.Pid)
+}
+
+func TestRunLockRefusesToRecycleFreshOrChangedLock(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewRunStore(filepath.Join(root, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-lock"
+	if _, err := store.Create(runID, map[string]any{"run_id": runID}); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.Lock(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(mustRunDir(t, store, runID), "run.lock")
+	writeLock := func(content []byte) {
+		t.Helper()
+		if err := os.WriteFile(lockPath, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 生存中の pid を持つロックは回収されない。
+	writeLock([]byte(fmt.Sprintf(`{"pid":%d,"created_at":"2020-01-01T00:00:00Z"}`, os.Getpid())))
+	if err := lock.acquire(); err == nil || !strings.Contains(err.Error(), "already active") {
+		_ = os.Remove(lockPath)
+		t.Fatalf("live lock was not respected: %v", err)
+	}
+
+	// 空や部分書き込みのロックは別プロセスが書き込み中の可能性があるため、新鮮なうちには回収されない。
+	for _, content := range [][]byte{nil, []byte(`{"pid":`)} {
+		writeLock(content)
+		if err := lock.acquire(); err == nil || strings.Contains(err.Error(), "already active") {
+			_ = os.Remove(lockPath)
+			t.Fatalf("fresh partial lock was recycled: %v", err)
+		}
+	}
+
+	// 死んだ pid でも新鮮なロックは回収しない。
+	dead := finishedProcessPID(t)
+	if pidAlive(dead) {
+		t.Skip("finished process id is still reported alive")
+	}
+	writeLock([]byte(fmt.Sprintf(`{"pid":%d,"created_at":"2020-01-01T00:00:00Z"}`, dead)))
+	if err := lock.acquire(); err == nil || strings.Contains(err.Error(), "already active") {
+		_ = os.Remove(lockPath)
+		t.Fatalf("fresh lock with a dead pid was recycled: %v", err)
+	}
+
+	// 死んだ pid の古いロックだけが、内容不変の再確認を経て回収される。
+	writeLock([]byte(fmt.Sprintf(`{"pid":%d,"created_at":"2020-01-01T00:00:00Z"}`, dead)))
+	past := time.Now().Add(-2 * staleLockGrace)
+	if err := os.Chtimes(lockPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.acquire(); err != nil {
+		t.Fatalf("stale lock was not recycled: %v", err)
+	}
+	lock.release()
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatal("lock should be released")
+	}
+}
+
+func TestRunLockDetectsConcurrentRecycle(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewRunStore(filepath.Join(root, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-lock-race"
+	if _, err := store.Create(runID, map[string]any{"run_id": runID}); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(mustRunDir(t, store, runID), "run.lock")
+	dead := finishedProcessPID(t)
+	if pidAlive(dead) {
+		t.Skip("finished process id is still reported alive")
+	}
+	stale := fmt.Sprintf(`{"pid":%d,"created_at":"2020-01-01T00:00:00Z"}`, dead)
+	if err := os.WriteFile(lockPath, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * staleLockGrace)
+	if err := os.Chtimes(lockPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.Lock(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 削除前再確認と削除の間で別プロセスが新しいロックに置き換えた場合、回収を諦める。
+	replacement := fmt.Sprintf(`{"pid":%d,"created_at":"2026-01-01T00:00:00Z"}`, os.Getpid())
+	if err := os.WriteFile(lockPath, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.acquire(); err == nil || !strings.Contains(err.Error(), "already active") {
+		_ = os.Remove(lockPath)
+		t.Fatalf("replaced lock was recycled: %v", err)
 	}
 }

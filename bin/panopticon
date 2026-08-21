@@ -28,10 +28,17 @@ BINARY="$ROOT_DIR/.panopticon-bin"
 needs_build=false
 if [ ! -x "$BINARY" ]; then
   needs_build=true
-elif [ "$ROOT_DIR/go.mod" -nt "$BINARY" ]; then
-  needs_build=true
 else
-  for source_dir in cmd internal workflows prompts; do
+  for build_input in go.mod go.sum; do
+    if [ "$ROOT_DIR/$build_input" -nt "$BINARY" ]; then
+      needs_build=true
+      break
+    fi
+  done
+fi
+if [ "$needs_build" = false ]; then
+  # バイナリに埋め込まれるのは internal/panopticon/assets 配下のため cmd/internal のみ走査する。
+  for source_dir in cmd internal; do
     if [ -d "$ROOT_DIR/$source_dir" ] && find "$ROOT_DIR/$source_dir" -type f -newer "$BINARY" -print -quit | grep -q .; then
       needs_build=true
       break

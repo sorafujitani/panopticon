@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 func canonicalPath(path string) string {
@@ -56,11 +57,26 @@ func readSymlinkTarget(path string) (string, error) {
 	return target, nil
 }
 
+// rawFileMode returns the raw Unix st_mode (type bits included), matching the
+// Python reference implementation's `f"{info.st_mode:o}"` representation.
+func rawFileMode(info fs.FileInfo) any {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Mode)
+	}
+	return info.Mode()
+}
+
 func fileDigest(path string, info fs.FileInfo) (string, error) {
 	hash := sha256.New()
 	file, err := os.Open(path)
 	if err != nil {
 		failure := flowError("cannot capture worktree snapshot: %s: %v", path, err)
+		return "", failure
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(opened, info) {
+		_ = file.Close()
+		failure := flowError("a file changed during worktree snapshot: %s", path)
 		return "", failure
 	}
 	buffer := make([]byte, 1024*1024)
@@ -79,7 +95,7 @@ func fileDigest(path string, info fs.FileInfo) (string, error) {
 		failure := flowError("cannot capture worktree snapshot: %s: %v", path, err)
 		return "", failure
 	}
-	if after.Size() != info.Size() || after.ModTime() != info.ModTime() || after.Mode().Perm() != info.Mode().Perm() || after.Mode() != info.Mode() {
+	if after.Size() != info.Size() || after.ModTime() != info.ModTime() || after.Mode().Perm() != info.Mode().Perm() || after.Mode() != info.Mode() || !os.SameFile(after, info) {
 		failure := flowError("a file changed during worktree snapshot: %s", path)
 		return "", failure
 	}
@@ -136,7 +152,7 @@ func snapshotFilesystem(root string, excluded []string) (map[string]string, erro
 			}
 			result[relative] = fmt.Sprintf("file:%o:%s", mode.Perm(), digest)
 		default:
-			result[relative] = fmt.Sprintf("special:%o:%d:%d", mode, info.Size(), info.ModTime().UnixNano())
+			result[relative] = fmt.Sprintf("special:%o:%d:%d", rawFileMode(info), info.Size(), info.ModTime().UnixNano())
 		}
 		return nil
 	})
@@ -265,7 +281,7 @@ func gitSnapshotPath(path, status, original string, allowMissing bool) (string, 
 		value := fmt.Sprintf("git:%s:file:%o:%s%s", status, mode.Perm(), digest, origin)
 		return value, nil
 	}
-	value := fmt.Sprintf("git:%s:special:%o:%d:%d%s", status, mode, info.Size(), info.ModTime().UnixNano(), origin)
+	value := fmt.Sprintf("git:%s:special:%o:%d:%d%s", status, rawFileMode(info), info.Size(), info.ModTime().UnixNano(), origin)
 	return value, nil
 }
 

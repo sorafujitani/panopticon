@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -204,5 +205,46 @@ func TestNonGitNoWorktreeUsesFilesystemFallback(t *testing.T) {
 	}
 	if _, err := snapshotWorktree(root, nil, false); err == nil {
 		t.Fatal("expected fail-closed without fallback")
+	}
+}
+
+func TestSpecialSnapshotUsesRawUnixMode(t *testing.T) {
+	root := t.TempDir()
+	fifo := filepath.Join(root, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	snapshot, err := snapshotWorktree(root, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, ok := snapshot["pipe"]
+	if !ok {
+		t.Fatalf("fifo missing: %#v", snapshot)
+	}
+	// Python 参照実装と同じ生 st_mode (S_IFIFO|0644 = 010644) を使う。
+	if !strings.HasPrefix(value, "special:10644:") {
+		t.Fatalf("special snapshot=%q want raw st_mode prefix special:10644:", value)
+	}
+}
+
+func TestFileDigestDetectsSwappedPath(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first.txt")
+	second := filepath.Join(root, "second.txt")
+	contents := []byte("identical contents\n")
+	if err := os.WriteFile(first, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Lstat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 同一内容・同一サイズでも dev/ino が異なるファイルとの不一致を検出する。
+	if _, err := fileDigest(first, secondInfo); err == nil || !strings.Contains(err.Error(), "changed during worktree snapshot") {
+		t.Fatalf("swapped path was not detected: %v", err)
 	}
 }

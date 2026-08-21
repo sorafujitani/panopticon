@@ -159,10 +159,22 @@ func errorPayload(err error) map[string]any {
 			result["returncode"] = nil
 		}
 		if command.Stderr != "" {
-			result["stderr"] = truncateText(command.Stderr, 2000)
+			result["stderr"] = truncateTail(command.Stderr, 2000)
 		}
 	}
 	return result
+}
+
+// truncateTail keeps the last `maximum` runes, matching Python's value[-maximum:].
+func truncateTail(value string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	runes := []rune(strings.ToValidUTF8(value, "\uFFFD"))
+	if len(runes) > maximum {
+		return string(runes[len(runes)-maximum:])
+	}
+	return string(runes)
 }
 
 func errorTypeName(err error) string {
@@ -262,7 +274,9 @@ func (engine *FlowEngine) runVerification(state map[string]any, spec StepSpec) (
 		record := map[string]any{"argv": append([]string(nil), command...)}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(spec.TimeoutSec)*time.Second)
 		argv := append([]string{command[0]}, command[1:]...)
-		process := exec.CommandContext(ctx, "env", argv...)
+		// Execute directly (like Python's shell=False); an "env" wrapper would
+		// misinterpret "-"/"=" arguments and absorb the timeout kill.
+		process := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		process.Dir = worktree
 		process.Env = engine.Client.envList()
 		process.Stdin = nil
@@ -742,7 +756,31 @@ func (engine *FlowEngine) conditionMatches(condition string, state map[string]an
 		actual, ok := value.(bool)
 		return ok && actual == *expected, nil
 	}
-	return boolValue(value, false), nil
+	return truthy(value), nil
+}
+
+// truthy mirrors Python's bool() for JSON-decoded values.
+func truthy(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case bool:
+		return typed
+	case string:
+		return typed != ""
+	case float64:
+		return typed != 0
+	case int64:
+		return typed != 0
+	case int:
+		return typed != 0
+	case []any:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 func (engine *FlowEngine) dependencyState(state map[string]any, spec StepSpec) (bool, string) {
@@ -760,7 +798,23 @@ func (engine *FlowEngine) dependencyState(state map[string]any, spec StepSpec) (
 }
 
 func (engine *FlowEngine) agentName(state map[string]any, spec StepSpec) string {
-	return "pan-" + lastRunPart(stringValue(state["run_id"])) + "-" + spec.ID
+	runID := []rune(stringValue(state["run_id"]))
+	if len(runID) > 8 {
+		runID = runID[len(runID)-8:]
+	}
+	var suffix strings.Builder
+	for _, character := range strings.ToLower(string(runID)) {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '_' || character == '-' {
+			suffix.WriteRune(character)
+			continue
+		}
+		suffix.WriteRune('-')
+	}
+	name := "pan-" + suffix.String() + "-" + spec.ID
+	if runes := []rune(name); len(runes) > 31 {
+		return string(runes[:31])
+	}
+	return name
 }
 
 func agentStartArgs(name string, spec StepSpec, paneID string) []string {
@@ -779,17 +833,7 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		sourceState := mapValue(steps[spec.ReuseAgent])
 		sourceAgent := mapValue(sourceState["agent"])
 		if sourceAgent == nil || stringValue(sourceAgent["target"]) == "" {
-			if engine.workflow == nil {
-				return "", flowError("reuse_agent target has no agent: %s", spec.ReuseAgent)
-			}
-			sourceSpec, ok := engine.workflow.StepMap()[spec.ReuseAgent]
-			if !ok {
-				return "", flowError("reuse_agent target step not found: %s", spec.ReuseAgent)
-			}
-			if _, err := engine.ensureAgent(state, sourceSpec); err != nil {
-				return "", err
-			}
-			sourceAgent = mapValue(sourceState["agent"])
+			return "", flowError("reuse_agent target has no agent: %s", spec.ReuseAgent)
 		}
 		copied := cloneMap(sourceAgent)
 		copied["reused_from"] = spec.ReuseAgent
@@ -1019,50 +1063,11 @@ func equalStrings(left, right []string) bool {
 	return true
 }
 
-func gitWorktreeRoots(starts ...string) []string {
-	roots := map[string]bool{}
-	for _, start := range starts {
-		candidate := canonicalPath(start)
-		if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
-			continue
-		}
-		command := exec.Command("git", "worktree", "list", "--porcelain")
-		command.Dir = candidate
-		command.Env = append(os.Environ(), "LC_ALL=C", "LANG=C", "LANGUAGE=C")
-		command.Stdin = nil
-		output, err := command.Output()
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(output), "\n") {
-			if !strings.HasPrefix(line, "worktree ") {
-				continue
-			}
-			path := strings.TrimPrefix(line, "worktree ")
-			if filepath.IsAbs(path) {
-				roots[canonicalPath(path)] = true
-			}
-		}
-	}
-	result := make([]string, 0, len(roots))
-	for root := range roots {
-		result = append(result, root)
-	}
-	sort.Strings(result)
-	return result
-}
-
-func artifactAllowedRoots(spec StepSpec, state map[string]any) []string {
-	roots := []string{
+func artifactAllowedRoots(_ StepSpec, state map[string]any) []string {
+	return []string{
 		canonicalPath(stringValue(state["run_dir"])),
 		canonicalPath(stringValue(stateMap(state, "worktree")["path"])),
 	}
-	if spec.ReadPolicy == "repo-and-dependencies" {
-		repo := canonicalPath(stringValue(state["repo"]))
-		roots = append(roots, repo)
-		roots = append(roots, gitWorktreeRoots(repo, roots[1])...)
-	}
-	return roots
 }
 
 func validateResult(result map[string]any, spec StepSpec, state map[string]any) (bool, string) {
@@ -1352,34 +1357,12 @@ func (engine *FlowEngine) handleCustomSubmissionTimeout(state map[string]any, sp
 
 func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSpec, target string) error {
 	deadline := time.Now().Add(time.Duration(spec.TimeoutSec) * time.Second)
-	workingBudget := spec.TimeoutSec * 1000
-	for {
-		workingTimeout := workingBudget
-		if workingTimeout > workingWaitMilliseconds {
-			workingTimeout = workingWaitMilliseconds
-		}
-		if workingTimeout <= 0 {
-			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s timed out while waiting for working/result.json", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
-		}
-		_, err := engine.waitAgent(target, "working", workingTimeout)
-		if err == nil {
-			break
-		}
+	workingTimeout := min(spec.TimeoutSec*1000, workingWaitMilliseconds)
+	if _, err := engine.waitAgent(target, "working", workingTimeout); err != nil {
 		if !isTimeoutError(err) {
 			return err
 		}
-		workingBudget -= workingTimeout
-		result, _ := engine.loadResult(state, spec)
-		status := engine.currentAgentStatus(target)
-		if status == "blocked" {
-			return &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
-		}
-		if result != nil && (status == "idle" || status == "done") {
-			return nil
-		}
-		if workingBudget <= 0 {
-			return engine.handleCustomSubmissionTimeout(state, spec, target, err)
-		}
+		return engine.handleCustomSubmissionTimeout(state, spec, target, err)
 	}
 
 	for {

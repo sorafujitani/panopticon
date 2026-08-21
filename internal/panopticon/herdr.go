@@ -267,14 +267,31 @@ func parseJSONValue(text string) (any, bool) {
 	return value, true
 }
 
+// parseStrictJSONValue parses exactly one JSON document and rejects trailing
+// content, matching Python's json.loads (which raises on "Extra data").
+func parseStrictJSONValue(text string) (any, bool) {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false
+	}
+	if decoder.More() {
+		return nil, false
+	}
+	return value, true
+}
+
 func ParseJSONOutput(text string) any {
 	stripped := strings.TrimSpace(text)
 	if stripped == "" {
 		return nil
 	}
-	if value, ok := parseJSONValue(stripped); ok {
+	if value, ok := parseStrictJSONValue(stripped); ok {
 		return value
 	}
+	// Fall back to scanning every position and keeping the last document,
+	// matching Python's parse_json_output.
 	var documents []any
 	for index, character := range text {
 		if character != '{' && character != '[' {
@@ -396,7 +413,11 @@ func (client *HerdrClient) RunRawAt(args []string, timeout time.Duration, direct
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, "env", append([]string{client.Executable}, args...)...)
+	// Execute the Herdr binary directly (like Python's shell=False) instead of
+	// routing through "env": env misinterprets arguments starting with "-" or
+	// containing "=", and a timeout kill would only reach the env wrapper,
+	// orphaning the actual Herdr process.
+	command := exec.CommandContext(ctx, client.Executable, args...)
 	command.Dir = directory
 	command.Env = client.envList()
 	command.Stdin = nil

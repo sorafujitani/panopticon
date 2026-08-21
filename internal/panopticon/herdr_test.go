@@ -38,6 +38,23 @@ func TestParseJSONOutputUsesLastNoisyDocument(t *testing.T) {
 	}
 }
 
+// Python's json.loads rejects trailing content and then scans every position,
+// adopting the last document; a single document followed by another one must
+// therefore resolve to the last, not the first.
+func TestParseJSONOutputAdoptsLastDocumentWhenTrailingDocumentFollows(t *testing.T) {
+	payload := ParseJSONOutput("{\"status\":\"old\"} {\"status\":\"new\"}")
+	if mapValue(payload)["status"] != "new" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+func TestParseJSONOutputAcceptsSingleDocumentWithTrailingText(t *testing.T) {
+	payload := ParseJSONOutput("{\"status\":\"ok\"}\nplain trailing text without json\n")
+	if mapValue(payload)["status"] != "ok" {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
 func TestExtractsPathStatusAndErrorCodeFromNestedPayload(t *testing.T) {
 	getPayload := map[string]any{
 		"status": "ok",

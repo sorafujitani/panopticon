@@ -322,3 +322,43 @@ func TestShellSplitKeepsShellSyntaxInOneArgument(t *testing.T) {
 		}
 	}
 }
+
+func TestEmbeddedAssetsMatchRepositoryFiles(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, pair := range []struct{ embeddedDirectory, repositoryDirectory string }{
+		{"workflows", filepath.Join(root, "workflows")},
+		{"prompts", filepath.Join(root, "prompts")},
+	} {
+		embeddedEntries, err := embeddedAssets.ReadDir(filepath.ToSlash(filepath.Join("assets", pair.embeddedDirectory)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		repositoryEntries, err := os.ReadDir(pair.repositoryDirectory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		embeddedFiles := map[string]bool{}
+		for _, entry := range embeddedEntries {
+			if entry.IsDir() {
+				t.Fatalf("embedded %s contains a directory: %s", pair.embeddedDirectory, entry.Name())
+			}
+			embeddedFiles[entry.Name()] = true
+			embedded, err := embeddedAssets.ReadFile(filepath.ToSlash(filepath.Join("assets", pair.embeddedDirectory, entry.Name())))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repository, err := os.ReadFile(filepath.Join(pair.repositoryDirectory, entry.Name()))
+			if err != nil {
+				t.Fatalf("embedded %s/%s has no repository copy: %v", pair.embeddedDirectory, entry.Name(), err)
+			}
+			if string(embedded) != string(repository) {
+				t.Fatalf("embedded %s/%s differs from the repository copy", pair.embeddedDirectory, entry.Name())
+			}
+		}
+		for _, entry := range repositoryEntries {
+			if !entry.IsDir() && !embeddedFiles[entry.Name()] {
+				t.Fatalf("repository %s/%s is missing from embedded assets", pair.embeddedDirectory, entry.Name())
+			}
+		}
+	}
+}

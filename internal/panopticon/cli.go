@@ -155,6 +155,32 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
+// parseInterleaved parses flags while allowing positional arguments to appear
+// before, between, and after them, matching Python argparse. The standard
+// flag package stops parsing at the first non-flag argument, so flags placed
+// after a positional would silently end up in the remaining args.
+func parseInterleaved(fs *flag.FlagSet, arguments []string) ([]string, error) {
+	var positional []string
+	current := arguments
+	for len(current) > 0 {
+		if current[0] == "--" {
+			// Everything after "--" is positional verbatim.
+			positional = append(positional, current[1:]...)
+			return positional, nil
+		}
+		if err := fs.Parse(current); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positional = append(positional, rest[0])
+		current = rest[1:]
+	}
+	return positional, nil
+}
+
 func taskValue(option, positional string) string {
 	if strings.TrimSpace(option) != "" {
 		return strings.TrimSpace(option)
@@ -264,13 +290,14 @@ func runStart(arguments []string, global globalFlags) (int, error) {
 	foreground := fs.Bool("foreground", false, "run to completion in this process")
 	background := fs.Bool("background", true, "run in an orchestrator pane")
 	taskOption := fs.String("task", "", "task")
-	if err := fs.Parse(arguments); err != nil {
+	positionalArgs, err := parseInterleaved(fs, arguments)
+	if err != nil {
 		return 2, err
 	}
 	if *foreground {
 		*background = false
 	}
-	positional := strings.Join(fs.Args(), " ")
+	positional := strings.Join(positionalArgs, " ")
 	repoPath, workflow, verifyCommands, err := loadPlanInputs(*repo, *workflowValue, verify)
 	if err != nil {
 		return 1, err
@@ -303,7 +330,8 @@ func runDryRun(arguments []string, global globalFlags) (int, error) {
 	fs.Var(&verify, "verify", "verification argv (repeatable)")
 	noWorktree := fs.Bool("no-worktree", false, "explicitly do not create a dedicated worktree")
 	taskOption := fs.String("task", "", "task")
-	if err := fs.Parse(arguments); err != nil {
+	positionalArgs, err := parseInterleaved(fs, arguments)
+	if err != nil {
 		return 2, err
 	}
 	repoPath, workflow, verifyCommands, err := loadPlanInputs(*repo, *workflowValue, verify)
@@ -317,7 +345,7 @@ func runDryRun(arguments []string, global globalFlags) (int, error) {
 	if err := requireManaged(client); err != nil {
 		return 1, err
 	}
-	payload := DryRunPayload(repoPath, workflow, taskValue(*taskOption, strings.Join(fs.Args(), " ")), verifyCommands, !*noWorktree)
+	payload := DryRunPayload(repoPath, workflow, taskValue(*taskOption, strings.Join(positionalArgs, " ")), verifyCommands, !*noWorktree)
 	if err := printJSON(payload); err != nil {
 		return 1, err
 	}
@@ -370,7 +398,8 @@ func runStatus(arguments []string, global globalFlags, full bool) (int, error) {
 	stateRoot, herdrBin := addCommonFlags(fs, global)
 	runIDOption := fs.String("run-id", "", "run id")
 	step := fs.String("step", "", "step id")
-	if err := fs.Parse(arguments); err != nil {
+	positionalArgs, err := parseInterleaved(fs, arguments)
+	if err != nil {
 		return 2, err
 	}
 	store, client, err := newRuntime(globalFlags{stateRoot: *stateRoot, herdrBin: *herdrBin})
@@ -381,8 +410,8 @@ func runStatus(arguments []string, global globalFlags, full bool) (int, error) {
 		return 1, err
 	}
 	positional := ""
-	if len(fs.Args()) > 0 {
-		positional = fs.Args()[0]
+	if len(positionalArgs) > 0 {
+		positional = positionalArgs[0]
 	}
 	runID, err := pickRunID(store, positional, *runIDOption)
 	if err != nil {
@@ -503,10 +532,11 @@ func runWait(arguments []string, global globalFlags) (int, error) {
 func runCancel(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("cancel")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
-	if err := fs.Parse(arguments); err != nil {
+	positionalArgs, err := parseInterleaved(fs, arguments)
+	if err != nil {
 		return 2, err
 	}
-	if len(fs.Args()) == 0 {
+	if len(positionalArgs) == 0 {
 		err := fmt.Errorf("run_id is required")
 		return 2, err
 	}
@@ -517,7 +547,7 @@ func runCancel(arguments []string, global globalFlags) (int, error) {
 	if err := requireManaged(client); err != nil {
 		return 1, err
 	}
-	state, err := NewFlowEngine(store, client).CancelRun(fs.Args()[0])
+	state, err := NewFlowEngine(store, client).CancelRun(positionalArgs[0])
 	if err != nil {
 		return 1, err
 	}
@@ -663,7 +693,8 @@ func Main(arguments []string) int {
 		if printErr := printJSON(map[string]any{"error": err.Error(), "type": errorTypeName(err)}); printErr != nil {
 			fmt.Fprintln(os.Stderr, printErr)
 		}
-		return 1
+		// Python argparse exits with 2 on usage errors (missing/unknown command).
+		return 2
 	}
 	var code int
 	switch command {
@@ -690,7 +721,7 @@ func Main(arguments []string) int {
 	case "doctor":
 		code, err = runDoctor(rest, global)
 	default:
-		code, err = 1, fmt.Errorf("unknown command: %s", command)
+		code, err = 2, fmt.Errorf("unknown command: %s", command)
 	}
 	if err != nil {
 		if printErr := printJSON(map[string]any{"error": err.Error(), "type": errorTypeName(err)}); printErr != nil {
