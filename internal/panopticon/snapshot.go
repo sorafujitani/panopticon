@@ -51,7 +51,7 @@ func isWithin(path string, roots ...string) bool {
 func readSymlinkTarget(path string) (string, error) {
 	target, err := os.Readlink(path)
 	if err != nil {
-		return "", flowError("worktree snapshot を取得できません: %s: %v", path, err)
+		return "", flowError("cannot capture worktree snapshot: %s: %v", path, err)
 	}
 	return target, nil
 }
@@ -60,27 +60,27 @@ func fileDigest(path string, info fs.FileInfo) (string, error) {
 	hash := sha256.New()
 	file, err := os.Open(path)
 	if err != nil {
-		failure := flowError("worktree snapshot を取得できません: %s: %v", path, err)
+		failure := flowError("cannot capture worktree snapshot: %s: %v", path, err)
 		return "", failure
 	}
 	buffer := make([]byte, 1024*1024)
 	_, copyErr := io.CopyBuffer(hash, file, buffer)
 	closeErr := file.Close()
 	if copyErr != nil {
-		failure := flowError("worktree snapshot を取得できません: %s: %v", path, copyErr)
+		failure := flowError("cannot capture worktree snapshot: %s: %v", path, copyErr)
 		return "", failure
 	}
 	if closeErr != nil {
-		failure := flowError("worktree snapshot を取得できません: %s: %v", path, closeErr)
+		failure := flowError("cannot capture worktree snapshot: %s: %v", path, closeErr)
 		return "", failure
 	}
 	after, err := os.Lstat(path)
 	if err != nil {
-		failure := flowError("worktree snapshot を取得できません: %s: %v", path, err)
+		failure := flowError("cannot capture worktree snapshot: %s: %v", path, err)
 		return "", failure
 	}
 	if after.Size() != info.Size() || after.ModTime() != info.ModTime() || after.Mode().Perm() != info.Mode().Perm() || after.Mode() != info.Mode() {
-		failure := flowError("worktree snapshot 中にファイルが変更されました: %s", path)
+		failure := flowError("a file changed during worktree snapshot: %s", path)
 		return "", failure
 	}
 	digest := fmt.Sprintf("%x", hash.Sum(nil))
@@ -99,7 +99,7 @@ func snapshotFilesystem(root string, excluded []string) (map[string]string, erro
 	}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return flowError("worktree snapshot を取得できません: %s: %v", path, err)
+			return flowError("cannot capture worktree snapshot: %s: %v", path, err)
 		}
 		if path == root {
 			return nil
@@ -112,7 +112,7 @@ func snapshotFilesystem(root string, excluded []string) (map[string]string, erro
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			return flowError("worktree snapshot を取得できません: %s: %v", path, err)
+			return flowError("cannot capture worktree snapshot: %s: %v", path, err)
 		}
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
@@ -167,19 +167,19 @@ func hasGitMetadata(root string) bool {
 func statusPath(root string, raw []byte) (string, string, error) {
 	decoded := string(raw)
 	if decoded == "" || filepath.IsAbs(decoded) {
-		failure := flowError("git status の path が worktree 相対ではありません: %q", decoded)
+		failure := flowError("git status path is not relative to worktree: %q", decoded)
 		return "", "", failure
 	}
 	parts := strings.Split(filepath.ToSlash(decoded), "/")
 	for _, part := range parts {
 		if part == ".." || part == "" {
-			failure := flowError("git status の path が worktree 相対ではありません: %q", decoded)
+			failure := flowError("git status path is not relative to worktree: %q", decoded)
 			return "", "", failure
 		}
 	}
 	path := filepath.Join(append([]string{root}, parts...)...)
 	if !isWithin(path, root) {
-		failure := flowError("git status の path が worktree の外側です: %q", decoded)
+		failure := flowError("git status path is outside the worktree: %q", decoded)
 		return "", "", failure
 	}
 	relative := filepath.ToSlash(filepath.Join(parts...))
@@ -198,7 +198,7 @@ func parseGitStatus(output []byte) ([]statusEntry, error) {
 		return nil, nil
 	}
 	if output[len(output)-1] != 0 {
-		return nil, flowError("git status の NUL 終端が不正です")
+		return nil, flowError("git status has an invalid NUL terminator")
 	}
 	fields := bytes.Split(output[:len(output)-1], []byte{0})
 	valid := map[byte]bool{' ': true, 'M': true, 'A': true, 'R': true, 'D': true, '?': true, 'C': true, 'U': true, 'T': true, '!': true}
@@ -206,16 +206,16 @@ func parseGitStatus(output []byte) ([]statusEntry, error) {
 	for index := 0; index < len(fields); index++ {
 		record := fields[index]
 		if len(record) < 4 || record[2] != ' ' || !valid[record[0]] || !valid[record[1]] {
-			return nil, flowError("git status の status/path record が不正です")
+			return nil, flowError("git status has an invalid status/path record")
 		}
 		entry := statusEntry{status: string(record[:2]), path: append([]byte(nil), record[3:]...)}
 		if len(entry.path) == 0 {
-			return nil, flowError("git status の path が空です")
+			return nil, flowError("git status path is empty")
 		}
 		if strings.Contains(entry.status, "R") || strings.Contains(entry.status, "C") {
 			index++
 			if index >= len(fields) || len(fields[index]) == 0 {
-				return nil, flowError("git status の rename/copy 元 path がありません")
+				return nil, flowError("git status rename/copy source path is missing")
 			}
 			entry.original = append([]byte(nil), fields[index]...)
 			entry.hasOrig = true
@@ -237,7 +237,7 @@ func gitSnapshotPath(path, status, original string, allowMissing bool) (string, 
 			}
 			return fmt.Sprintf("git:%s:deleted%s", status, origin), nil
 		}
-		failure := flowError("git status の path を snapshot できません: %s: %v", path, err)
+		failure := flowError("cannot snapshot git status path: %s: %v", path, err)
 		return "", failure
 	}
 	mode := info.Mode()
@@ -254,7 +254,7 @@ func gitSnapshotPath(path, status, original string, allowMissing bool) (string, 
 		return value, nil
 	}
 	if mode.IsDir() {
-		failure := flowError("git status の directory を snapshot できません: %s", path)
+		failure := flowError("cannot snapshot git status directory: %s", path)
 		return "", failure
 	}
 	if mode.IsRegular() {
@@ -272,7 +272,7 @@ func gitSnapshotPath(path, status, original string, allowMissing bool) (string, 
 func snapshotWorktree(worktree string, excluded []string, allowFilesystemFallback bool) (map[string]string, error) {
 	info, err := os.Stat(worktree)
 	if err != nil || !info.IsDir() {
-		return nil, flowError("worktree が directory ではありません: %s", worktree)
+		return nil, flowError("worktree is not a directory: %s", worktree)
 	}
 	command := exec.Command("git", "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	command.Dir = worktree
@@ -285,7 +285,7 @@ func snapshotWorktree(worktree string, excluded []string, allowFilesystemFallbac
 		if allowFilesystemFallback && !hasGitMetadata(worktree) && strings.Contains(strings.ToLower(stderr.String()), "not a git repository") {
 			return snapshotFilesystem(worktree, excluded)
 		}
-		return nil, flowError("git status が失敗しました (returncode=%d): %s", exitCode(command), strings.TrimSpace(stderr.String()))
+		return nil, flowError("git status failed (returncode=%d): %s", exitCode(command), strings.TrimSpace(stderr.String()))
 	}
 	entries, err := parseGitStatus(stdout.Bytes())
 	if err != nil {
@@ -312,7 +312,7 @@ func snapshotWorktree(worktree string, excluded []string, allowFilesystemFallbac
 			}
 		}
 		if _, exists := result[relative]; exists {
-			return nil, flowError("git status に同じ path が重複しています: %s", relative)
+			return nil, flowError("git status contains a duplicate path: %s", relative)
 		}
 		snapshot, err := gitSnapshotPath(path, entry.status, original, false)
 		if err != nil {
@@ -321,10 +321,10 @@ func snapshotWorktree(worktree string, excluded []string, allowFilesystemFallbac
 		result[relative] = snapshot
 		if strings.Contains(entry.status, "R") {
 			if !entry.hasOrig {
-				return nil, flowError("git status の rename 元 path がありません")
+				return nil, flowError("git status rename source path is missing")
 			}
 			if _, exists := result[original]; exists {
-				return nil, flowError("git status に同じ path が重複しています: %s", original)
+				return nil, flowError("git status contains a duplicate path: %s", original)
 			}
 			oldSnapshot, err := gitSnapshotPath(originalPath, entry.status, "", true)
 			if err != nil {

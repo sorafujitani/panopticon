@@ -367,7 +367,7 @@ func atomicWriteJSON(path string, payload any) error {
 	_ = os.Chmod(filepath.Dir(path), 0o700)
 	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return stateError("JSON state を一時ファイルに書けません: %s: %v", path, err)
+		return stateError("cannot write temporary JSON state file: %s: %v", path, err)
 	}
 	temporaryName := temporary.Name()
 	defer func() {
@@ -376,22 +376,22 @@ func atomicWriteJSON(path string, payload any) error {
 	}()
 	encoded, err := marshalIndented(payload)
 	if err != nil {
-		return stateError("JSON state をエンコードできません: %v", err)
+		return stateError("cannot encode JSON state: %v", err)
 	}
 	if _, err := temporary.Write(encoded); err != nil {
-		return stateError("JSON state を書けません: %s: %v", path, err)
+		return stateError("cannot write JSON state: %s: %v", path, err)
 	}
 	if err := temporary.Sync(); err != nil {
-		return stateError("JSON state を同期できません: %s: %v", path, err)
+		return stateError("cannot sync JSON state: %s: %v", path, err)
 	}
 	if err := temporary.Chmod(0o600); err != nil {
-		return stateError("JSON state の権限を設定できません: %s: %v", path, err)
+		return stateError("cannot set JSON state permissions: %s: %v", path, err)
 	}
 	if err := temporary.Close(); err != nil {
-		return stateError("JSON state を閉じられません: %s: %v", path, err)
+		return stateError("cannot close JSON state: %s: %v", path, err)
 	}
 	if err := os.Rename(temporaryName, path); err != nil {
-		return stateError("JSON state を置換できません: %s: %v", path, err)
+		return stateError("cannot replace JSON state: %s: %v", path, err)
 	}
 	if directory, err := os.Open(filepath.Dir(path)); err == nil {
 		_ = directory.Sync()
@@ -403,17 +403,17 @@ func atomicWriteJSON(path string, payload any) error {
 func readJSON(path string) (any, error) {
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, stateError("state が見つかりません: %s", path)
+		return nil, stateError("state not found: %s", path)
 	}
 	if err != nil {
-		return nil, stateError("JSON state を読めません: %s: %v", path, err)
+		return nil, stateError("cannot read JSON state: %s: %v", path, err)
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return nil, stateError("JSON state が壊れています: %s: %v", path, err)
+		return nil, stateError("JSON state is corrupted: %s: %v", path, err)
 	}
 	return value, nil
 }
@@ -425,7 +425,7 @@ type RunLock struct {
 
 func (lock *RunLock) acquire() error {
 	if err := os.MkdirAll(filepath.Dir(lock.path), 0o700); err != nil {
-		return stateError("run lock の親 directory を作れません: %v", err)
+		return stateError("cannot create the parent directory for the run lock: %v", err)
 	}
 	payload := map[string]any{"pid": os.Getpid(), "created_at": utcNow()}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -436,13 +436,13 @@ func (lock *RunLock) acquire() error {
 			_ = file.Close()
 			if writeErr != nil {
 				_ = os.Remove(lock.path)
-				return stateError("run lock を書けません: %s: %v", lock.path, writeErr)
+				return stateError("cannot write run lock: %s: %v", lock.path, writeErr)
 			}
 			lock.held = true
 			return nil
 		}
 		if !errors.Is(err, os.ErrExist) {
-			return stateError("run lock を取得できません: %s: %v", lock.path, err)
+			return stateError("cannot acquire run lock: %s: %v", lock.path, err)
 		}
 		existing, readErr := readJSON(lock.path)
 		pid := int64(0)
@@ -454,11 +454,11 @@ func (lock *RunLock) acquire() error {
 			}
 		}
 		if pidAlive(pid) {
-			return stateError("run は別プロセスが実行中です (pid=%d)", pid)
+			return stateError("run is already active in another process (pid=%d)", pid)
 		}
 		_ = os.Remove(lock.path)
 	}
-	return stateError("run lock を取得できません: %s", lock.path)
+	return stateError("cannot acquire run lock: %s", lock.path)
 }
 
 func (lock *RunLock) release() {
@@ -486,16 +486,16 @@ func NewRunStore(root string) (*RunStore, error) {
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, stateError("HOME が取得できません: %v", err)
+			return nil, stateError("cannot determine HOME: %v", err)
 		}
 		root = filepath.Join(home, ".local", "state", "panopticon", "runs")
 	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return nil, stateError("state root が不正です: %v", err)
+		return nil, stateError("invalid state root: %v", err)
 	}
 	if err := os.MkdirAll(absolute, 0o700); err != nil {
-		return nil, stateError("state directory を作れません: %s: %v", absolute, err)
+		return nil, stateError("cannot create state directory: %s: %v", absolute, err)
 	}
 	_ = os.Chmod(absolute, 0o700)
 	return &RunStore{Root: filepath.Clean(absolute)}, nil
@@ -503,7 +503,7 @@ func NewRunStore(root string) (*RunStore, error) {
 
 func (store *RunStore) RunDir(runID string) (string, error) {
 	if runID == "" || filepath.Base(runID) != runID || runID == "." || runID == ".." {
-		return "", stateError("run id が不正です: %q", runID)
+		return "", stateError("invalid run id: %q", runID)
 	}
 	return filepath.Join(store.Root, runID), nil
 }
@@ -531,12 +531,12 @@ func (store *RunStore) Create(runID string, state map[string]any) (string, error
 	}
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		if os.IsExist(err) {
-			return "", stateError("run id が既に存在します: %s", runID)
+			return "", stateError("run already exists: %s", runID)
 		}
-		return "", stateError("run directory を作れません: %s: %v", directory, err)
+		return "", stateError("cannot create run directory: %s: %v", directory, err)
 	}
 	if err := os.Mkdir(filepath.Join(directory, "steps"), 0o700); err != nil {
-		return "", stateError("steps directory を作れません: %s: %v", directory, err)
+		return "", stateError("cannot create steps directory: %s: %v", directory, err)
 	}
 	statePath := filepath.Join(directory, "state.json")
 	if err := atomicWriteJSON(statePath, state); err != nil {
@@ -556,7 +556,7 @@ func (store *RunStore) Load(runID string) (map[string]any, error) {
 	}
 	state, ok := value.(map[string]any)
 	if !ok {
-		return nil, stateError("state のトップレベルが object ではありません: %s", runID)
+		return nil, stateError("state top level is not an object: %s", runID)
 	}
 	return state, nil
 }
@@ -577,7 +577,7 @@ func (store *RunStore) List() ([]map[string]any, error) {
 		return entries, nil
 	}
 	if err != nil {
-		return nil, stateError("state directory を読めません: %s: %v", store.Root, err)
+		return nil, stateError("cannot read state directory: %s: %v", store.Root, err)
 	}
 	for _, entry := range directoryEntries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
@@ -594,7 +594,7 @@ func (store *RunStore) List() ([]map[string]any, error) {
 		}
 		state, ok := value.(map[string]any)
 		if !ok {
-			entries = append(entries, map[string]any{"run_id": entry.Name(), "status": "corrupt", "error": "state のトップレベルが object ではありません"})
+			entries = append(entries, map[string]any{"run_id": entry.Name(), "status": "corrupt", "error": "state top level is not an object"})
 			continue
 		}
 		workflowName := any(nil)
@@ -673,10 +673,10 @@ func (store *RunStore) Remove(runID string) error {
 		return err
 	}
 	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
-		return stateError("run が見つかりません: %s", runID)
+		return stateError("run not found: %s", runID)
 	}
 	if err := os.RemoveAll(directory); err != nil {
-		return stateError("run state を削除できません: %s: %v", directory, err)
+		return stateError("cannot remove run state: %s: %v", directory, err)
 	}
 	return nil
 }

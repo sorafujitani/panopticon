@@ -71,7 +71,7 @@ func writeSingleStepWorkflow(t *testing.T, root, role, writePolicy, submitKey st
 		t.Fatal(err)
 	}
 	prompt := "RESULT_PATH={{RESULT_PATH}}\n" +
-		"- 作業対象は専用 worktree のみ: `{{WORKTREE_PATH}}`\n" +
+		"- Dedicated worktree only: `{{WORKTREE_PATH}}`\n" +
 		"- worktree: `{{WORKTREE_PATH}}`\n" +
 		"- run_id: `{{RUN_ID}}`\n" +
 		"- step_id: `{{STEP_ID}}`\n" +

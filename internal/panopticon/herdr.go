@@ -36,7 +36,7 @@ func RequireHerdrEnv(environ map[string]string) error {
 		environ = currentEnvironment()
 	}
 	if environ["HERDR_ENV"] != "1" {
-		return herdrError("HERDR_ENV=1 の Herdr 管理ペイン内で実行してください")
+		return herdrError("run inside a Herdr-managed pane with HERDR_ENV=1")
 	}
 	return nil
 }
@@ -389,7 +389,7 @@ func (client *HerdrClient) RunRawAt(args []string, timeout time.Duration, direct
 		available = true
 	}
 	if !available {
-		return RawResult{}, herdrError("herdr executable が見つかりません: %s", client.Executable)
+		return RawResult{}, herdrError("herdr executable not found: %s", client.Executable)
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -405,10 +405,10 @@ func (client *HerdrClient) RunRawAt(args []string, timeout time.Duration, direct
 	command.Stderr = &stderr
 	err := command.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		return RawResult{}, &CommandError{Message: fmt.Sprintf("Herdr command がタイムアウトしました: %s", strings.Join(client.runArgs(args), " ")), Argv: client.runArgs(args), Code: "timeout_or_start_failed"}
+		return RawResult{}, &CommandError{Message: fmt.Sprintf("Herdr command timed out: %s", strings.Join(client.runArgs(args), " ")), Argv: client.runArgs(args), Code: "timeout_or_start_failed"}
 	}
 	if err != nil && command.ProcessState == nil {
-		return RawResult{}, &CommandError{Message: fmt.Sprintf("Herdr command を起動できませんでした: %s", strings.Join(client.runArgs(args), " ")), Argv: client.runArgs(args), Code: "timeout_or_start_failed", Stdout: stdout.String(), Stderr: stderr.String()}
+		return RawResult{}, &CommandError{Message: fmt.Sprintf("failed to start Herdr command: %s", strings.Join(client.runArgs(args), " ")), Argv: client.runArgs(args), Code: "timeout_or_start_failed", Stdout: stdout.String(), Stderr: stderr.String()}
 	}
 	returnCode := 0
 	if command.ProcessState != nil {
@@ -446,7 +446,7 @@ func (client *HerdrClient) RunJSONAt(args []string, timeout time.Duration, direc
 		return nil, &CommandError{Message: message, Argv: client.runArgs(args), ReturnCode: intPointer(result.ReturnCode), Code: code, Stdout: result.Stdout, Stderr: result.Stderr}
 	}
 	if payload == nil {
-		return nil, herdrError("Herdr が JSON を返しませんでした: %s", strings.Join(client.runArgs(args), " "))
+		return nil, herdrError("Herdr did not return JSON: %s", strings.Join(client.runArgs(args), " "))
 	}
 	return payload, nil
 }

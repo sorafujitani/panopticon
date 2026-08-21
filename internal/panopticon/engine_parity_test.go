@@ -371,7 +371,7 @@ func TestResumeRejectsModifiedWorkflowDigest(t *testing.T) {
 func TestReviewerDoesNotClaimExistingDeveloperChanges(t *testing.T) {
 	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
 	workflowRoot := filepath.Join(fixture.root, "workflow")
-	prompt := "RESULT_PATH={{RESULT_PATH}}\n- 作業対象は専用 worktree のみ: `{{WORKTREE_PATH}}`\n- worktree: `{{WORKTREE_PATH}}`\n- run_id: `{{RUN_ID}}`\n- step_id: `{{STEP_ID}}`\n- role: `{{ROLE}}`\n## JSON contract\n{{JSON_CONTRACT}}\n"
+	prompt := "RESULT_PATH={{RESULT_PATH}}\n- Dedicated worktree only: `{{WORKTREE_PATH}}`\n- worktree: `{{WORKTREE_PATH}}`\n- run_id: `{{RUN_ID}}`\n- step_id: `{{STEP_ID}}`\n- role: `{{ROLE}}`\n## JSON contract\n{{JSON_CONTRACT}}\n"
 	if err := os.WriteFile(filepath.Join(workflowRoot, "prompt.md"), []byte(prompt), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +524,7 @@ func TestWorktreeModeRejectsRepositoryPath(t *testing.T) {
 	fixture.engine.Client.Environ["FAKE_HERDR_WORKTREE"] = fixture.options.Repo
 	fixture.options.UseWorktree = true
 	_, err := fixture.engine.CreateRun(fixture.options)
-	if err == nil || !strings.Contains(err.Error(), "repository の外側") {
+	if err == nil || !strings.Contains(err.Error(), "outside the target repository") {
 		t.Fatalf("expected outside-repo error, got %v", err)
 	}
 }

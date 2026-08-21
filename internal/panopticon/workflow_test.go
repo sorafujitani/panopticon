@@ -247,7 +247,7 @@ artifact_kinds = ["report"]
 		t.Fatal(err)
 	}
 	_, err := LoadWorkflow(filepath.Join(root, "cycle.toml"))
-	if err == nil || !strings.Contains(err.Error(), "循環依存") {
+	if err == nil || !strings.Contains(err.Error(), "workflow contains a cycle") {
 		t.Fatalf("expected cycle error, got %v", err)
 	}
 }
@@ -290,7 +290,7 @@ func TestDryRunHasNoStateSideEffect(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	payload := DryRunPayload(repo, workflow, "調査する", workflow.DefaultVerify, true)
+	payload := DryRunPayload(repo, workflow, "Investigate", workflow.DefaultVerify, true)
 	if !boolValue(payload["dry_run"], false) {
 		t.Fatal("dry_run")
 	}

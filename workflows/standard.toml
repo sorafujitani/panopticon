@@ -1,7 +1,7 @@
 version = 1
 name = "standard"
 
-# 絶対に shell 文字列として連結せず、engine が argv 配列のまま実行する。
+# Never concatenate commands into a shell string; the engine executes the argv array directly.
 default_verify = [["git", "diff", "--check"]]
 
 [[steps]]

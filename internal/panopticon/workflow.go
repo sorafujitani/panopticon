@@ -142,16 +142,16 @@ func readWorkflowFile(path string) ([]byte, error) {
 	if strings.HasPrefix(path, "embedded:") {
 		content, err := embeddedRead(strings.TrimPrefix(path, "embedded:"))
 		if err != nil {
-			return nil, workflowError("workflow が見つかりません: %s", path)
+			return nil, workflowError("workflow not found: %s", path)
 		}
 		return content, nil
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, workflowError("workflow が見つかりません: %s", path)
+			return nil, workflowError("workflow not found: %s", path)
 		}
-		return nil, workflowError("workflow を読めません: %s: %v", path, err)
+		return nil, workflowError("cannot read workflow: %s: %v", path, err)
 	}
 	return content, nil
 }
@@ -159,7 +159,7 @@ func readWorkflowFile(path string) ([]byte, error) {
 func asString(value any, label string) (string, error) {
 	text, ok := value.(string)
 	if !ok || strings.TrimSpace(text) == "" {
-		return "", workflowError("%s は空でない文字列で指定してください", label)
+		return "", workflowError("%s must be a non-empty string", label)
 	}
 	trimmed := strings.TrimSpace(text)
 	return trimmed, nil
@@ -180,13 +180,13 @@ func asStringList(value any, label string) ([]string, error) {
 			}
 			return result, nil
 		}
-		return nil, workflowError("%s は文字列配列で指定してください", label)
+		return nil, workflowError("%s must be an array of strings", label)
 	}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
 		text, ok := item.(string)
 		if !ok {
-			return nil, workflowError("%s は文字列配列で指定してください", label)
+			return nil, workflowError("%s must be an array of strings", label)
 		}
 		if strings.TrimSpace(text) != "" {
 			result = append(result, text)
@@ -201,13 +201,13 @@ func asAgentArgs(value any, label string) ([]string, error) {
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return nil, workflowError("%s は空でない文字列配列で指定してください", label)
+		return nil, workflowError("%s must be a non-empty array of strings", label)
 	}
 	result := make([]string, 0, len(items))
 	for _, item := range items {
 		text, ok := item.(string)
 		if !ok || strings.TrimSpace(text) == "" {
-			return nil, workflowError("%s は空でない文字列配列で指定してください", label)
+			return nil, workflowError("%s must be a non-empty array of strings", label)
 		}
 		result = append(result, text)
 	}
@@ -220,19 +220,19 @@ func parseCommandList(value any, label string) ([][]string, error) {
 	}
 	items, ok := value.([]any)
 	if !ok {
-		return nil, workflowError("%s はコマンド配列の配列で指定してください", label)
+		return nil, workflowError("%s must be an array of command arrays", label)
 	}
 	commands := make([][]string, 0, len(items))
 	for index, raw := range items {
 		parts, ok := raw.([]any)
 		if !ok || len(parts) == 0 {
-			return nil, workflowError("%s[%d] は空でない文字列配列で指定してください", label, index)
+			return nil, workflowError("%s[%d] must be a non-empty array of strings", label, index)
 		}
 		command := make([]string, 0, len(parts))
 		for _, token := range parts {
 			text, ok := token.(string)
 			if !ok || text == "" {
-				return nil, workflowError("%s[%d] は空でない文字列配列で指定してください", label, index)
+				return nil, workflowError("%s[%d] must be a non-empty array of strings", label, index)
 			}
 			command = append(command, text)
 		}
@@ -249,10 +249,10 @@ func resolveTemplate(workflowPath, value string) (string, error) {
 	if filepath.IsAbs(text) {
 		resolved, err := filepath.Abs(text)
 		if err != nil {
-			return "", workflowError("prompt template が見つかりません: %s", text)
+			return "", workflowError("prompt template not found: %s", text)
 		}
 		if _, err := os.Stat(resolved); err != nil {
-			return "", workflowError("prompt template が見つかりません: %s", resolved)
+			return "", workflowError("prompt template not found: %s", resolved)
 		}
 		cleaned := filepath.Clean(resolved)
 		return cleaned, nil
@@ -264,7 +264,7 @@ func resolveTemplate(workflowPath, value string) (string, error) {
 			candidate = strings.TrimPrefix(candidate, "")
 		}
 		if _, err := embeddedRead(candidate); err != nil {
-			return "", workflowError("prompt template が見つかりません: embedded:%s", candidate)
+			return "", workflowError("prompt template not found: embedded:%s", candidate)
 		}
 		return "embedded:" + candidate, nil
 	}
@@ -273,7 +273,7 @@ func resolveTemplate(workflowPath, value string) (string, error) {
 		return "", fmt.Errorf("template relative path: %w", err)
 	}
 	if _, err := os.Stat(resolved); err != nil {
-		return "", workflowError("prompt template が見つかりません: %s", resolved)
+		return "", workflowError("prompt template not found: %s", resolved)
 	}
 	cleaned := filepath.Clean(resolved)
 	return cleaned, nil
@@ -282,21 +282,21 @@ func resolveTemplate(workflowPath, value string) (string, error) {
 func parseContract(value any, stepID string) (Contract, error) {
 	table, ok := value.(map[string]any)
 	if !ok {
-		return Contract{}, workflowError("step %s: contract table が必要です", stepID)
+		return Contract{}, workflowError("step %s: contract must be a table", stepID)
 	}
 	required, err := asStringList(table["required_fields"], fmt.Sprintf("step %s.contract.required_fields", stepID))
 	if err != nil {
 		return Contract{}, fmt.Errorf("workflow contract: %w", err)
 	}
 	if len(required) == 0 {
-		return Contract{}, workflowError("step %s: contract.required_fields は必須です", stepID)
+		return Contract{}, workflowError("step %s: contract.required_fields is required", stepID)
 	}
 	artifacts, err := asStringList(table["artifact_kinds"], fmt.Sprintf("step %s.contract.artifact_kinds", stepID))
 	if err != nil {
 		return Contract{}, fmt.Errorf("workflow contract: %w", err)
 	}
 	if len(artifacts) == 0 {
-		return Contract{}, workflowError("step %s: artifact_kinds は1つ以上必要です", stepID)
+		return Contract{}, workflowError("step %s: artifact_kinds must contain at least one item", stepID)
 	}
 	booleans, err := asStringList(table["required_boolean_fields"], fmt.Sprintf("step %s.contract.required_boolean_fields", stepID))
 	if err != nil {
@@ -312,14 +312,14 @@ func parseContract(value any, stepID string) (Contract, error) {
 func parseStep(value any, workflowPath string) (StepSpec, error) {
 	table, ok := value.(map[string]any)
 	if !ok {
-		return StepSpec{}, workflowError("steps は table の配列で指定してください")
+		return StepSpec{}, workflowError("steps must be an array of tables")
 	}
 	id, err := asString(table["id"], "steps[].id")
 	if err != nil {
 		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
 	}
 	if !stepIDPattern.MatchString(id) {
-		return StepSpec{}, workflowError("step id が不正です: %q", id)
+		return StepSpec{}, workflowError("invalid step id: %q", id)
 	}
 	role, err := asString(table["role"], "step "+id+".role")
 	if err != nil {
@@ -331,7 +331,7 @@ func parseStep(value any, workflowPath string) (StepSpec, error) {
 	}
 	kind = strings.ToLower(kind)
 	if !supportedAgentKinds[kind] {
-		return StepSpec{}, workflowError("step %s: 未対応の agent kind: %s", id, kind)
+		return StepSpec{}, workflowError("step %s: unsupported agent kind: %s", id, kind)
 	}
 	depends, err := asStringList(table["depends_on"], "step "+id+".depends_on")
 	if err != nil {
@@ -339,7 +339,7 @@ func parseStep(value any, workflowPath string) (StepSpec, error) {
 	}
 	for _, dependency := range depends {
 		if dependency == id {
-			return StepSpec{}, workflowError("step %s: 自分自身には依存できません", id)
+			return StepSpec{}, workflowError("step %s: cannot depend on itself", id)
 		}
 	}
 	readPolicy, err := asString(table["read_policy"], "step "+id+".read_policy")
@@ -351,18 +351,18 @@ func parseStep(value any, workflowPath string) (StepSpec, error) {
 		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
 	}
 	if !map[string]bool{"none": true, "worktree": true, "repo-and-dependencies": true}[readPolicy] {
-		return StepSpec{}, workflowError("step %s: read_policy が不正です: %s", id, readPolicy)
+		return StepSpec{}, workflowError("step %s: invalid read_policy: %s", id, readPolicy)
 	}
 	if !map[string]bool{"none": true, "worktree": true, "repo-and-dependencies": true}[writePolicy] {
-		return StepSpec{}, workflowError("step %s: write_policy が不正です: %s", id, writePolicy)
+		return StepSpec{}, workflowError("step %s: invalid write_policy: %s", id, writePolicy)
 	}
 	timeout, err := asInt(table["timeout_seconds"])
 	if err != nil || timeout < 1 || timeout > 86400 {
-		return StepSpec{}, workflowError("step %s: timeout_seconds は1〜86400の整数です", id)
+		return StepSpec{}, workflowError("step %s: timeout_seconds must be an integer from 1 to 86400", id)
 	}
 	templateValue, ok := table["template"].(string)
 	if !ok {
-		return StepSpec{}, workflowError("steps[].template は空でない文字列で指定してください")
+		return StepSpec{}, workflowError("steps[].template must be a non-empty string")
 	}
 	template, err := resolveTemplate(workflowPath, templateValue)
 	if err != nil {
@@ -423,19 +423,19 @@ func validateGraph(steps []StepSpec) error {
 	byID := make(map[string]StepSpec, len(steps))
 	for _, step := range steps {
 		if _, exists := byID[step.ID]; exists {
-			return workflowError("step id が重複しています")
+			return workflowError("duplicate step id")
 		}
 		byID[step.ID] = step
 	}
 	for _, step := range steps {
 		for _, dependency := range step.DependsOn {
 			if _, exists := byID[dependency]; !exists {
-				return workflowError("step %s: 未定義の依存先: %s", step.ID, dependency)
+				return workflowError("step %s: undefined dependency: %s", step.ID, dependency)
 			}
 		}
 		if step.ReuseAgent != "" {
 			if _, exists := byID[step.ReuseAgent]; !exists {
-				return workflowError("step %s: reuse_agent の参照先がありません: %s", step.ID, step.ReuseAgent)
+				return workflowError("step %s: reuse_agent target not found: %s", step.ID, step.ReuseAgent)
 			}
 		}
 	}
@@ -444,7 +444,7 @@ func validateGraph(steps []StepSpec) error {
 	var visit func(string) error
 	visit = func(id string) error {
 		if visiting[id] {
-			return workflowError("workflow に循環依存があります: %s", id)
+			return workflowError("workflow contains a cycle: %s", id)
 		}
 		if visited[id] {
 			return nil
@@ -474,7 +474,7 @@ func workflowData(raw map[string]any) (map[string]any, error) {
 	}
 	table, ok := nested.(map[string]any)
 	if !ok {
-		return nil, workflowError("[workflow] は table で指定してください")
+		return nil, workflowError("[workflow] must be a table")
 	}
 	merged := make(map[string]any, len(raw)+len(table))
 	for key, value := range raw {
@@ -490,7 +490,7 @@ func LoadWorkflow(path string) (Workflow, error) {
 	if !strings.HasPrefix(path, "embedded:") {
 		absolute, err := filepath.Abs(path)
 		if err != nil {
-			return Workflow{}, workflowError("workflow が見つかりません: %s", path)
+			return Workflow{}, workflowError("workflow not found: %s", path)
 		}
 		path = filepath.Clean(absolute)
 	}
@@ -500,7 +500,7 @@ func LoadWorkflow(path string) (Workflow, error) {
 	}
 	raw, err := ParseTOML(string(content))
 	if err != nil {
-		return Workflow{}, workflowError("workflow TOML が不正です (%s): %v", path, err)
+		return Workflow{}, workflowError("invalid workflow TOML (%s): %v", path, err)
 	}
 	data, err := workflowData(raw)
 	if err != nil {
@@ -510,12 +510,12 @@ func LoadWorkflow(path string) (Workflow, error) {
 	if value, exists := data["version"]; exists {
 		parsedVersion, parseErr := asInt(value)
 		if parseErr != nil {
-			return Workflow{}, workflowError("未対応の workflow version: %v", value)
+			return Workflow{}, workflowError("unsupported workflow version: %v", value)
 		}
 		version = parsedVersion
 	}
 	if version != 1 {
-		return Workflow{}, workflowError("未対応の workflow version: %d", version)
+		return Workflow{}, workflowError("unsupported workflow version: %d", version)
 	}
 	name := filepath.Base(path)
 	name = strings.TrimSuffix(name, filepath.Ext(name))
@@ -527,7 +527,7 @@ func LoadWorkflow(path string) (Workflow, error) {
 	}
 	rawSteps, ok := data["steps"].([]any)
 	if !ok || len(rawSteps) == 0 {
-		return Workflow{}, workflowError("workflow.steps は1つ以上の table 配列が必要です")
+		return Workflow{}, workflowError("workflow.steps must contain at least one table")
 	}
 	steps := make([]StepSpec, 0, len(rawSteps))
 	for _, rawStep := range rawSteps {
@@ -545,7 +545,7 @@ func LoadWorkflow(path string) (Workflow, error) {
 		return Workflow{}, fmt.Errorf("workflow load: %w", err)
 	}
 	if len(defaultVerify) == 0 {
-		return Workflow{}, workflowError("default_verify は1つ以上必要です")
+		return Workflow{}, workflowError("default_verify must contain at least one command")
 	}
 	hash := sha256.Sum256(content)
 	digest := hex.EncodeToString(hash[:])
@@ -559,11 +559,11 @@ func LoadRepoConfig(repo string) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	if err != nil {
-		return nil, workflowError("repo の .panopticon.toml を読めません: %v", err)
+		return nil, workflowError("cannot read repo .panopticon.toml: %v", err)
 	}
 	raw, err := ParseTOML(string(content))
 	if err != nil {
-		return nil, workflowError("repo の .panopticon.toml が不正です: %v", err)
+		return nil, workflowError("invalid repo .panopticon.toml: %v", err)
 	}
 	return raw, nil
 }
@@ -645,7 +645,7 @@ func ResolveWorkflowPath(repo, requested, packageRoot string, config map[string]
 			return "embedded:workflows/standard.toml", nil
 		}
 	}
-	failure := workflowError("workflow '%s' が見つかりません。検索先: %s", requested, strings.Join(candidates, ", "))
+	failure := workflowError("workflow '%s' not found. Searched: %s", requested, strings.Join(candidates, ", "))
 	return "", failure
 }
 
@@ -675,10 +675,10 @@ func ResolveVerifyCommands(cliValues []string, config map[string]any, workflow W
 		for _, value := range cliValues {
 			command, err := shellSplit(value)
 			if err != nil {
-				return nil, workflowError("--verify の引用が不正です: %v", err)
+				return nil, workflowError("invalid --verify quoting: %v", err)
 			}
 			if len(command) == 0 {
-				return nil, workflowError("--verify に空のコマンドは指定できません")
+				return nil, workflowError("--verify cannot specify an empty command")
 			}
 			commands = append(commands, command)
 		}

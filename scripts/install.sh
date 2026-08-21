@@ -24,11 +24,11 @@ ROOT_DIR=$(
   cd -- "$SCRIPT_DIR/.." && pwd -P
 )
 SOURCE="$ROOT_DIR/bin/panopticon"
-BIN_DIR=${HOME:?HOME が設定されていません}/.local/bin
+BIN_DIR=${HOME:?HOME must be set}/.local/bin
 DEST="$BIN_DIR/panopticon"
 
 if [ ! -f "$SOURCE" ] || [ ! -x "$SOURCE" ]; then
-  printf '%s\n' "panopticon wrapper が実行可能ではありません: $SOURCE" >&2
+  printf '%s\n' "panopticon wrapper is not executable: $SOURCE" >&2
   exit 1
 fi
 
@@ -38,11 +38,11 @@ if [ -L "$DEST" ]; then
     # The wrapper is stable; refreshing its generated Go binary is safe.
     :
   else
-    printf '%s\n' "既存の symlink を上書きしません: $DEST" >&2
+    printf '%s\n' "Do not overwrite the existing symlink: $DEST" >&2
     exit 1
   fi
 elif [ -e "$DEST" ]; then
-  printf '%s\n' "既存のファイルを上書きしません: $DEST" >&2
+  printf '%s\n' "Do not overwrite the existing file: $DEST" >&2
   exit 1
 fi
 
@@ -59,7 +59,7 @@ mv -f -- "$temporary" "$CACHE"
 
 if [ -L "$DEST" ] && [ "$(readlink "$DEST")" = "$SOURCE" ]; then
   trap - EXIT HUP INT TERM
-  printf '%s\n' "既にインストール済みです: $DEST -> $SOURCE"
+  printf '%s\n' "Already installed: $DEST -> $SOURCE"
   exit 0
 fi
 
@@ -69,9 +69,9 @@ ln -s "$SOURCE" "$link_temporary"
 # mv -n keeps a concurrent destination intact instead of replacing it.
 mv -n "$link_temporary" "$DEST"
 if [ ! -L "$DEST" ] || [ "$(readlink "$DEST")" != "$SOURCE" ]; then
-  printf '%s\n' "symlink の作成に失敗しました: $DEST" >&2
+  printf '%s\n' "Failed to create symlink: $DEST" >&2
   exit 1
 fi
 
 trap - EXIT HUP INT TERM
-printf '%s\n' "インストールしました: $DEST -> $SOURCE"
+printf '%s\n' "Installed: $DEST -> $SOURCE"

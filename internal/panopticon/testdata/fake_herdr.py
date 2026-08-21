@@ -78,13 +78,13 @@ def _result(prompt: str) -> dict[str, Any]:
     step_id_match = re.search(r"- step_id: `([^`]+)`", prompt)
     role_match = re.search(r"- role: `([^`]+)`", prompt)
     result_path_value = _prompt_value(prompt, "RESULT_PATH=")
-    worktree_value = _prompt_value(prompt, "- 作業対象は専用 worktree のみ: ")
+    worktree_value = _prompt_value(prompt, "- Dedicated worktree only: ")
     if worktree_value:
         worktree_value = worktree_value.strip("`")
     if run_id_match is None or step_id_match is None or role_match is None:
-        raise RuntimeError("fake Herdr が prompt の固定境界を解釈できません")
+        raise RuntimeError("fake Herdr cannot parse the prompt's fixed boundaries")
     if result_path_value is None:
-        raise RuntimeError("fake Herdr が RESULT_PATH を解釈できません")
+        raise RuntimeError("fake Herdr cannot parse RESULT_PATH")
 
     worktree_prompt_value = _prompt_value(prompt, "- worktree: ")
     if worktree_prompt_value:

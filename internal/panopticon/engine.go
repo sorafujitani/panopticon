@@ -137,14 +137,14 @@ func resultContract(spec StepSpec, runID string) map[string]any {
 		"step_id":        spec.ID,
 		"role":           spec.Role,
 		"status":         "success | blocked | failed",
-		"summary":        "短い文字列",
+		"summary":        "short string",
 		"artifacts": []any{map[string]any{
 			"path":        "/absolute/path/to/an-existing-file",
 			"kind":        "one of: " + kinds,
-			"description": "成果物の説明",
+			"description": "artifact description",
 		}},
 		"changed_files": []string{"worktree-relative/path"},
-		"tests":         []string{"実行した検証の説明"},
+		"tests":         []string{"description of verification performed"},
 		"contract":      spec.Contract.AsMap(),
 	}
 }
@@ -186,11 +186,11 @@ func (engine *FlowEngine) snapshotStep(state map[string]any, spec StepSpec, phas
 	}
 	worktree := stateMap(state, "worktree")
 	if worktree == nil {
-		return flowError("state の worktree が不正です")
+		return flowError("state worktree is invalid")
 	}
 	enabled, ok := worktree["enabled"].(bool)
 	if !ok {
-		return flowError("state の worktree.enabled が不正です")
+		return flowError("state worktree.enabled is invalid")
 	}
 	runDir := stringValue(state["run_dir"])
 	snapshot, err := snapshotWorktree(stringValue(worktree["path"]), []string{runDir}, !enabled)
@@ -204,7 +204,7 @@ func (engine *FlowEngine) snapshotStep(state map[string]any, spec StepSpec, phas
 		before := mapValue(stepState["worktree_snapshot_before"])
 		beforeFiles, validBefore := snapshotFiles(before["files"])
 		if before == nil || !validBefore {
-			return flowError("step %s の worktree before snapshot がありません", spec.ID)
+			return flowError("step %s has no worktree before snapshot", spec.ID)
 		}
 		changed := snapshotDiff(beforeFiles, snapshot)
 		items := make([]any, 0, len(changed))
@@ -359,7 +359,7 @@ func (engine *FlowEngine) newState(runID string, options StartOptions, runDir st
 func (engine *FlowEngine) requiredID(payload any, kind string) (string, error) {
 	value, _ := ExtractID(payload, kind)
 	if value == "" {
-		return "", flowError("Herdr %s id をレスポンスから抽出できませんでした", kind)
+		return "", flowError("could not extract Herdr %s id from response", kind)
 	}
 	return value, nil
 }
@@ -443,14 +443,14 @@ func (engine *FlowEngine) provision(state map[string]any, options StartOptions) 
 		}
 		rawPath := ExtractPath(payload)
 		if rawPath == "" {
-			return flowError("Herdr worktree create のレスポンスに path がありません")
+			return flowError("Herdr worktree create response has no path")
 		}
 		worktreePath := normalizeResourcePath(rawPath, repo)
 		if info, err := os.Stat(worktreePath); err != nil || !info.IsDir() {
-			return flowError("Herdr worktree が directory ではありません: %s", worktreePath)
+			return flowError("Herdr worktree is not a directory: %s", worktreePath)
 		}
 		if isWithin(worktreePath, repo) {
-			return flowError("専用 worktree は対象 repository の外側である必要があります: %s", worktreePath)
+			return flowError("dedicated worktree must be outside the target repository: %s", worktreePath)
 		}
 		worktree["path"] = worktreePath
 		worktree["branch"] = branch
@@ -559,14 +559,14 @@ func (engine *FlowEngine) CreateRun(options StartOptions) (map[string]any, error
 		return nil, err
 	}
 	if os.Getenv("PANOPTICON_CHILD") == "1" {
-		return nil, herdrError("PANOPTICON_CHILD=1 の子 agent から Panopticon を再帰起動できません")
+		return nil, herdrError("cannot recursively start Panopticon from a child agent with PANOPTICON_CHILD=1")
 	}
 	repo, err := filepath.Abs(options.Repo)
 	if err != nil {
-		return nil, flowError("repo が不正です: %v", err)
+		return nil, flowError("invalid repo: %v", err)
 	}
 	if info, err := os.Stat(repo); err != nil || !info.IsDir() {
-		return nil, flowError("repo がディレクトリではありません: %s", repo)
+		return nil, flowError("repo is not a directory: %s", repo)
 	}
 	options.Repo = repo
 	if options.ScriptPath == "" {
@@ -607,7 +607,7 @@ func (engine *FlowEngine) CreateRun(options StartOptions) (map[string]any, error
 	if provisionErr != nil {
 		_ = engine.markTerminalFailure(runID, "provision_failed", provisionErr)
 		engine.cleanupTerminal(runID, true)
-		return nil, flowError("run %s の初期化に失敗しました: %v", runID, provisionErr)
+		return nil, flowError("failed to initialize run %s: %v", runID, provisionErr)
 	}
 	if !options.Background {
 		return engine.ResumeRun(runID, &options.Workflow)
@@ -619,7 +619,7 @@ func (engine *FlowEngine) CreateRun(options StartOptions) (map[string]any, error
 	if err := engine.launchBackground(runID, state, options); err != nil {
 		_ = engine.markTerminalFailure(runID, "orchestrator_launch_failed", err)
 		engine.cleanupTerminal(runID, true)
-		return nil, flowError("run %s のバックグラウンド起動に失敗しました: %v", runID, err)
+		return nil, flowError("failed to start run %s in the background: %v", runID, err)
 	}
 	return engine.Store.Load(runID)
 }
@@ -664,7 +664,7 @@ func (engine *FlowEngine) launchBackground(runID string, state map[string]any, o
 	resources := stateMap(state, "resources")
 	paneID := stringValue(resources["orchestrator_pane_id"])
 	if paneID == "" {
-		return flowError("orchestrator pane がありません")
+		return flowError("orchestrator pane not found")
 	}
 	script := options.ScriptPath
 	if script == "" {
@@ -676,7 +676,7 @@ func (engine *FlowEngine) launchBackground(runID string, state map[string]any, o
 		return err
 	}
 	if result.ReturnCode != 0 {
-		return &CommandError{Message: fmt.Sprintf("Herdr pane run が失敗しました: %s", strings.TrimSpace(result.Stdout)), Argv: append([]string{engine.Client.Executable}, "pane", "run", paneID, commandText(arguments)), ReturnCode: &result.ReturnCode, Code: "command_failed", Stdout: result.Stdout, Stderr: result.Stderr}
+		return &CommandError{Message: fmt.Sprintf("Herdr pane run failed: %s", strings.TrimSpace(result.Stdout)), Argv: append([]string{engine.Client.Executable}, "pane", "run", paneID, commandText(arguments)), ReturnCode: &result.ReturnCode, Code: "command_failed", Stdout: result.Stdout, Stderr: result.Stderr}
 	}
 	lock, err := engine.Store.Lock(runID)
 	if err != nil {
@@ -723,14 +723,14 @@ func (engine *FlowEngine) conditionMatches(condition string, state map[string]an
 		expression = strings.TrimSpace(parts[0])
 		rawExpected := strings.ToLower(strings.TrimSpace(parts[1]))
 		if rawExpected != "true" && rawExpected != "false" {
-			return false, flowError("condition の比較値は true/false のみです: %s", condition)
+			return false, flowError("condition comparison value must be true or false: %s", condition)
 		}
 		value := rawExpected == "true"
 		expected = &value
 	}
 	parts := strings.Split(expression, ".")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return false, flowError("condition は step.field 形式が必要です: %s", condition)
+		return false, flowError("condition must use step.field format: %s", condition)
 	}
 	stepState := mapValue(stateMap(state, "steps")[parts[0]])
 	result := mapValue(stepState["result"])
@@ -780,11 +780,11 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		sourceAgent := mapValue(sourceState["agent"])
 		if sourceAgent == nil || stringValue(sourceAgent["target"]) == "" {
 			if engine.workflow == nil {
-				return "", flowError("reuse_agent の対象に agent がありません: %s", spec.ReuseAgent)
+				return "", flowError("reuse_agent target has no agent: %s", spec.ReuseAgent)
 			}
 			sourceSpec, ok := engine.workflow.StepMap()[spec.ReuseAgent]
 			if !ok {
-				return "", flowError("reuse_agent の対象 step がありません: %s", spec.ReuseAgent)
+				return "", flowError("reuse_agent target step not found: %s", spec.ReuseAgent)
 			}
 			if _, err := engine.ensureAgent(state, sourceSpec); err != nil {
 				return "", err
@@ -815,7 +815,7 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 	}
 	workspaceID := stringValue(stateMap(state, "resources")["workspace_id"])
 	if workspaceID == "" {
-		return "", flowError("workspace id が state にありません")
+		return "", flowError("state has no workspace id")
 	}
 	worktree := stringValue(stateMap(state, "worktree")["path"])
 	payload, err := engine.Client.RunJSON([]string{"tab", "create", "--workspace", workspaceID, "--cwd", worktree, "--label", "flow-" + spec.ID, "--env", "PANOPTICON_CHILD=1", "--no-focus"}, 60*time.Second)
@@ -870,7 +870,7 @@ func readTemplate(path string) (string, error) {
 	if strings.HasPrefix(path, "embedded:") {
 		content, err := embeddedRead(strings.TrimPrefix(path, "embedded:"))
 		if err != nil {
-			failure := flowError("prompt template を読めません: %s: %v", path, err)
+			failure := flowError("cannot read prompt template: %s: %v", path, err)
 			return "", failure
 		}
 		text := string(content)
@@ -878,7 +878,7 @@ func readTemplate(path string) (string, error) {
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		failure := flowError("prompt template を読めません: %s: %v", path, err)
+		failure := flowError("cannot read prompt template: %s: %v", path, err)
 		return "", failure
 	}
 	text := string(content)
@@ -969,26 +969,26 @@ func (engine *FlowEngine) worktreeChangeError(state map[string]any, spec StepSpe
 	worktree := filepath.Clean(stringValue(stateMap(state, "worktree")["path"]))
 	changed, ok := result["changed_files"].([]any)
 	if !ok {
-		return fmt.Sprintf("step %s の worktree after snapshot がありません", spec.ID)
+		return fmt.Sprintf("step %s has no worktree after snapshot", spec.ID)
 	}
 	declared := []string{}
 	seen := map[string]bool{}
 	for _, raw := range changed {
 		item, ok := raw.(string)
 		if !ok {
-			return "changed_files が文字列配列ではありません"
+			return "changed_files must be an array of strings"
 		}
 		if item == "" || filepath.IsAbs(item) {
-			return fmt.Sprintf("changed_files が worktree 外です: %q", item)
+			return fmt.Sprintf("changed_files is outside the worktree: %q", item)
 		}
 		candidate := filepath.Clean(filepath.Join(worktree, filepath.FromSlash(item)))
 		if !isWithin(candidate, worktree) || candidate == worktree {
-			return fmt.Sprintf("changed_files が worktree 外です: %q", item)
+			return fmt.Sprintf("changed_files is outside the worktree: %q", item)
 		}
 		normalized, _ := filepath.Rel(worktree, candidate)
 		normalized = filepath.ToSlash(normalized)
 		if seen[normalized] {
-			return fmt.Sprintf("changed_files に重複があります: %v", declared)
+			return fmt.Sprintf("changed_files contains duplicates: %v", declared)
 		}
 		seen[normalized] = true
 		declared = append(declared, normalized)
@@ -997,12 +997,12 @@ func (engine *FlowEngine) worktreeChangeError(state map[string]any, spec StepSpe
 	sort.Strings(declared)
 	if spec.WritePolicy == "none" {
 		if len(actual) > 0 {
-			return fmt.Sprintf("read-only step が worktree を変更しました: %v", actual)
+			return fmt.Sprintf("read-only step modified the worktree: %v", actual)
 		}
 		return ""
 	}
 	if !equalStrings(actual, declared) {
-		return fmt.Sprintf("実際の worktree 差分と changed_files が一致しません: declared=%v, actual=%v", declared, actual)
+		return fmt.Sprintf("actual worktree diff does not match changed_files: declared=%v, actual=%v", declared, actual)
 	}
 	return ""
 }
@@ -1069,106 +1069,106 @@ func validateResult(result map[string]any, spec StepSpec, state map[string]any) 
 	contract := spec.Contract
 	for _, field := range contract.RequiredFields {
 		if _, exists := result[field]; !exists {
-			return false, "必須フィールドがありません: " + field
+			return false, "required field is missing: " + field
 		}
 	}
 	if ParseInt64(result["schema_version"]) != 1 {
-		return false, "schema_version は 1 である必要があります"
+		return false, "schema_version must be 1"
 	}
 	if stringValue(result["run_id"]) != stringValue(state["run_id"]) {
-		return false, "result.run_id が現在の run と一致しません"
+		return false, "result.run_id does not match the current run"
 	}
 	if stringValue(result["step_id"]) != spec.ID {
-		return false, "result.step_id が現在の step と一致しません"
+		return false, "result.step_id does not match the current step"
 	}
 	if stringValue(result["role"]) != spec.Role {
-		return false, "result.role が workflow の role と一致しません"
+		return false, "result.role does not match the workflow role"
 	}
 	status := stringValue(result["status"])
 	if status != "success" && status != "blocked" && status != "failed" {
-		return false, "result.status は success / blocked / failed のいずれかが必要です"
+		return false, "result.status must be success, blocked, or failed"
 	}
 	if strings.TrimSpace(stringValue(result["summary"])) == "" {
-		return false, "result.summary は空でない文字列が必要です"
+		return false, "result.summary must be a non-empty string"
 	}
 	artifacts, ok := result["artifacts"].([]any)
 	if !ok || len(artifacts) == 0 {
-		return false, "result.artifacts は1つ以上の配列が必要です"
+		return false, "result.artifacts must be a non-empty array"
 	}
 	worktree := stringValue(stateMap(state, "worktree")["path"])
 	allowedRoots := artifactAllowedRoots(spec, state)
 	for index, raw := range artifacts {
 		artifact := mapValue(raw)
 		if artifact == nil {
-			return false, fmt.Sprintf("artifacts[%d] は object が必要です", index)
+			return false, fmt.Sprintf("artifacts[%d] must be an object", index)
 		}
 		path := stringValue(artifact["path"])
 		if !filepath.IsAbs(path) {
-			return false, fmt.Sprintf("artifacts[%d].path は絶対パスが必要です", index)
+			return false, fmt.Sprintf("artifacts[%d].path must be absolute", index)
 		}
 		absolute := canonicalPath(path)
 		if !isWithin(absolute, allowedRoots...) {
-			return false, fmt.Sprintf("artifacts[%d].path が許可された参照範囲外です: %s", index, absolute)
+			return false, fmt.Sprintf("artifacts[%d].path is outside the allowed reference roots: %s", index, absolute)
 		}
 		if info, err := os.Stat(absolute); err != nil || info.IsDir() {
-			return false, fmt.Sprintf("artifacts[%d].path が存在しません: %s", index, absolute)
+			return false, fmt.Sprintf("artifacts[%d].path does not exist: %s", index, absolute)
 		}
 		kind := stringValue(artifact["kind"])
 		if !containsString(spec.Contract.ArtifactKinds, kind) {
-			return false, fmt.Sprintf("artifacts[%d].kind が不正です: %q", index, kind)
+			return false, fmt.Sprintf("artifacts[%d].kind is invalid: %q", index, kind)
 		}
 		if strings.TrimSpace(stringValue(artifact["description"])) == "" {
-			return false, fmt.Sprintf("artifacts[%d].description は必須です", index)
+			return false, fmt.Sprintf("artifacts[%d].description is required", index)
 		}
 	}
 	changed, ok := result["changed_files"].([]any)
 	if !ok {
-		return false, "changed_files は文字列配列が必要です"
+		return false, "changed_files must be an array of strings"
 	}
 	for index, raw := range changed {
 		item, ok := raw.(string)
 		if !ok || item == "" || filepath.IsAbs(item) {
-			return false, fmt.Sprintf("changed_files[%d] は worktree-relative path が必要です: %q", index, item)
+			return false, fmt.Sprintf("changed_files[%d] must be a worktree-relative path: %q", index, item)
 		}
 		candidate := filepath.Clean(filepath.Join(worktree, filepath.FromSlash(item)))
 		if candidate == worktree || !isWithin(candidate, worktree) {
-			return false, fmt.Sprintf("changed_files[%d] が worktree 外です: %q", index, item)
+			return false, fmt.Sprintf("changed_files[%d] is outside the worktree: %q", index, item)
 		}
 	}
 	if spec.WritePolicy == "none" && len(changed) > 0 {
-		return false, fmt.Sprintf("read-only step が changed_files を報告しました: %v", changed)
+		return false, fmt.Sprintf("read-only step reported changed_files: %v", changed)
 	}
 	tests, ok := result["tests"].([]any)
 	if !ok {
-		return false, "tests は文字列配列が必要です"
+		return false, "tests must be an array of strings"
 	}
 	for _, item := range tests {
 		if _, ok := item.(string); !ok {
-			return false, "tests は文字列配列が必要です"
+			return false, "tests must be an array of strings"
 		}
 	}
 	for _, field := range contract.RequiredBooleanFields {
 		if _, ok := result[field].(bool); !ok {
-			return false, fmt.Sprintf("%s は boolean が必要です", field)
+			return false, fmt.Sprintf("%s must be a boolean", field)
 		}
 	}
 	for _, field := range contract.RequiredListFields {
 		if _, ok := result[field].([]any); !ok {
-			return false, fmt.Sprintf("%s は配列が必要です", field)
+			return false, fmt.Sprintf("%s must be an array", field)
 		}
 	}
 	if spec.Role == "reviewer" {
 		decision := stringValue(result["decision"])
 		if decision != "approved" && decision != "needs_fixer" {
-			return false, "reviewer の decision は approved / needs_fixer が必要です"
+			return false, "reviewer decision must be approved or needs_fixer"
 		}
 		if boolValue(result["needs_fixer"], false) != (decision == "needs_fixer") {
-			return false, "reviewer の decision と needs_fixer が一致しません"
+			return false, "reviewer decision and needs_fixer do not match"
 		}
 	}
 	if spec.Role == "verifier" {
 		if _, ok := result["verified"].(bool); !ok {
-			return false, "verifier の verified は boolean が必要です"
+			return false, "verifier verified must be a boolean"
 		}
 	}
 	return true, "ok"
@@ -1197,12 +1197,12 @@ func (engine *FlowEngine) applyResult(state map[string]any, spec StepSpec, resul
 	} else if spec.Role == "verifier" {
 		verification := mapValue(stepState["verification"])
 		if !boolValue(verification["all_succeeded"], false) {
-			error := map[string]any{"message": "engine が実行した検証コマンドがすべて成功していません", "type": "verification_failed"}
+			error := map[string]any{"message": "engine verification commands did not all succeed", "type": "verification_failed"}
 			engine.markStep(state, spec, "failed", map[string]any{"error": error})
 			state["status"] = "failed"
 			state["error"] = error
 		} else if !boolValue(result["verified"], false) {
-			error := map[string]any{"message": "verifier が verified=false を返しました", "type": "verification_failed"}
+			error := map[string]any{"message": "verifier returned verified=false", "type": "verification_failed"}
 			engine.markStep(state, spec, "failed", map[string]any{"error": error})
 			state["status"] = "failed"
 			state["error"] = error
@@ -1227,14 +1227,14 @@ func (engine *FlowEngine) applyRecoveredResult(state map[string]any, spec StepSp
 	stepState := mapValue(stateMap(state, "steps")[spec.ID])
 	before := mapValue(stepState["worktree_snapshot_before"])
 	if before == nil {
-		failure := map[string]any{"message": fmt.Sprintf("step %s の worktree before snapshot がありません", spec.ID), "type": "worktree_snapshot_failed"}
+		failure := map[string]any{"message": fmt.Sprintf("step %s has no worktree before snapshot", spec.ID), "type": "worktree_snapshot_failed"}
 		engine.markStep(state, spec, "failed", map[string]any{"error": failure})
 		state["status"] = "failed"
 		state["error"] = failure
 		return true, true, engine.save(state)
 	}
 	if _, validBefore := snapshotFiles(before["files"]); !validBefore {
-		err := map[string]any{"message": fmt.Sprintf("step %s の worktree before snapshot がありません", spec.ID), "type": "worktree_snapshot_failed"}
+		err := map[string]any{"message": fmt.Sprintf("step %s has no worktree before snapshot", spec.ID), "type": "worktree_snapshot_failed"}
 		engine.markStep(state, spec, "failed", map[string]any{"error": err})
 		state["status"] = "failed"
 		state["error"] = err
@@ -1283,7 +1283,7 @@ func (engine *FlowEngine) recoverRunningStep(state map[string]any, spec StepSpec
 		return recovered, err
 	}
 	if ExtractStatus(payload) == "blocked" {
-		engine.markStep(state, spec, "blocked", map[string]any{"error": map[string]any{"message": "agent が blocked 状態です"}})
+		engine.markStep(state, spec, "blocked", map[string]any{"error": map[string]any{"message": "agent is blocked"}})
 		state["status"] = "blocked"
 		return true, engine.save(state)
 	}
@@ -1309,7 +1309,7 @@ func (engine *FlowEngine) runRawChecked(args []string, timeout time.Duration, de
 		if code == "" {
 			code = "command_failed"
 		}
-		return &CommandError{Message: fmt.Sprintf("%s が失敗しました", description), Argv: append([]string{engine.Client.Executable}, args...), ReturnCode: &result.ReturnCode, Code: code, Stdout: result.Stdout, Stderr: result.Stderr}
+		return &CommandError{Message: fmt.Sprintf("%s failed", description), Argv: append([]string{engine.Client.Executable}, args...), ReturnCode: &result.ReturnCode, Code: code, Stdout: result.Stdout, Stderr: result.Stderr}
 	}
 	return nil
 }
@@ -1325,7 +1325,7 @@ func (engine *FlowEngine) waitAgent(target, until string, timeoutMS int) (any, e
 		return nil, err
 	}
 	if ExtractStatus(payload) == "blocked" {
-		return nil, &CommandError{Message: fmt.Sprintf("agent %s が blocked 状態です", target), Argv: append([]string{engine.Client.Executable}, args...), Code: "agent_blocked", Stdout: jsonText(payload)}
+		return nil, &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: append([]string{engine.Client.Executable}, args...), Code: "agent_blocked", Stdout: jsonText(payload)}
 	}
 	return payload, nil
 }
@@ -1342,7 +1342,7 @@ func (engine *FlowEngine) handleCustomSubmissionTimeout(state map[string]any, sp
 	result, _ := engine.loadResult(state, spec)
 	status := engine.currentAgentStatus(target)
 	if status == "blocked" {
-		return &CommandError{Message: fmt.Sprintf("agent %s が blocked 状態です", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
+		return &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
 	}
 	if result != nil && (status == "idle" || status == "done") {
 		return nil
@@ -1359,7 +1359,7 @@ func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSp
 			workingTimeout = workingWaitMilliseconds
 		}
 		if workingTimeout <= 0 {
-			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s の working/result.json 待機がタイムアウトしました", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
+			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s timed out while waiting for working/result.json", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
 		}
 		_, err := engine.waitAgent(target, "working", workingTimeout)
 		if err == nil {
@@ -1372,7 +1372,7 @@ func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSp
 		result, _ := engine.loadResult(state, spec)
 		status := engine.currentAgentStatus(target)
 		if status == "blocked" {
-			return &CommandError{Message: fmt.Sprintf("agent %s が blocked 状態です", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
+			return &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
 		}
 		if result != nil && (status == "idle" || status == "done") {
 			return nil
@@ -1385,7 +1385,7 @@ func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSp
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s の result.json 待機がタイムアウトしました", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
+			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s timed out while waiting for result.json", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
 		}
 		_, err := engine.waitAgent(target, "", int(remaining/time.Millisecond))
 		if err != nil {
@@ -1420,7 +1420,7 @@ func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, targ
 			return err
 		}
 		if ExtractStatus(payload) == "blocked" {
-			return &CommandError{Message: fmt.Sprintf("agent %s が blocked 状態です", target), Argv: append([]string{engine.Client.Executable}, promptArgs...), Code: "agent_blocked", Stdout: jsonText(payload)}
+			return &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: append([]string{engine.Client.Executable}, promptArgs...), Code: "agent_blocked", Stdout: jsonText(payload)}
 		}
 		return nil
 	}
@@ -1430,7 +1430,7 @@ func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, targ
 	agent := mapValue(mapValue(stateMap(state, "steps")[spec.ID])["agent"])
 	paneID := stringValue(agent["pane_id"])
 	if paneID == "" {
-		return flowError("step %s: submit_key の送信先 agent pane がありません", spec.ID)
+		return flowError("step %s: no agent pane for submit_key", spec.ID)
 	}
 	if err := engine.runRawChecked([]string{"pane", "send-keys", paneID, spec.SubmitKey}, 30*time.Second, "pane send-keys"); err != nil {
 		return err
@@ -1499,7 +1499,7 @@ func (engine *FlowEngine) executeStep(state map[string]any, spec StepSpec) error
 	actual := stringSlice(stepState["actual_changed_files"])
 	if spec.WritePolicy == "none" && len(actual) > 0 {
 		errorValue := map[string]any{
-			"message": fmt.Sprintf("read-only step が worktree を変更しました: %v", actual),
+			"message": fmt.Sprintf("read-only step modified the worktree: %v", actual),
 			"type":    "worktree_changed_read_only",
 		}
 		engine.markStep(state, spec, "failed", map[string]any{"error": errorValue})
@@ -1508,7 +1508,7 @@ func (engine *FlowEngine) executeStep(state map[string]any, spec StepSpec) error
 		return engine.save(state)
 	}
 	if failureStatus != "" {
-		errorValue := map[string]any{"message": "step が失敗しました"}
+		errorValue := map[string]any{"message": "step failed"}
 		if failure != nil {
 			errorValue = errorPayload(failure)
 		}
@@ -1526,7 +1526,7 @@ func (engine *FlowEngine) executeStep(state map[string]any, spec StepSpec) error
 		return err
 	}
 	if result == nil {
-		errorValue := map[string]any{"message": "agent prompt 後に result.json が生成されませんでした", "type": "missing_result"}
+		errorValue := map[string]any{"message": "result.json was not generated after the agent prompt", "type": "missing_result"}
 		engine.markStep(state, spec, "failed", map[string]any{"error": errorValue})
 		state["status"] = "failed"
 		state["error"] = errorValue
@@ -1582,7 +1582,7 @@ func (engine *FlowEngine) execute(state map[string]any, workflow Workflow) error
 			}
 			ready, failedDependency := engine.dependencyState(state, spec)
 			if failedDependency != "" {
-				errorValue := map[string]any{"message": "依存 step が成功していません: " + failedDependency, "type": "blocked_dependency", "dependency": failedDependency}
+				errorValue := map[string]any{"message": "dependency step did not succeed: " + failedDependency, "type": "blocked_dependency", "dependency": failedDependency}
 				engine.markStep(state, spec, "blocked", map[string]any{"error": errorValue})
 				state["status"] = "blocked"
 				state["error"] = errorValue
@@ -1651,7 +1651,7 @@ func (engine *FlowEngine) execute(state map[string]any, workflow Workflow) error
 			return engine.save(state)
 		}
 		if !progress {
-			errorValue := map[string]any{"message": "依存関係を解決できない step が残っています", "type": "workflow_deadlock"}
+			errorValue := map[string]any{"message": "a step with unresolved dependencies remains", "type": "workflow_deadlock"}
 			state["status"] = "blocked"
 			state["error"] = errorValue
 			engine.appendEvent(state, "blocked", map[string]any{"error": errorValue})
@@ -1664,21 +1664,21 @@ func workflowFromState(state map[string]any) (Workflow, error) {
 	workflow := mapValue(state["workflow"])
 	path := stringValue(workflow["path"])
 	if path == "" {
-		return Workflow{}, flowError("state に workflow がありません")
+		return Workflow{}, flowError("state has no workflow")
 	}
 	storedDigest := stringValue(workflow["digest"])
 	if storedDigest == "" {
-		return Workflow{}, flowError("state に workflow TOML digest がありません")
+		return Workflow{}, flowError("state has no workflow TOML digest")
 	}
 	loaded, err := LoadWorkflow(path)
 	if err != nil {
 		return Workflow{}, err
 	}
 	if loaded.Digest != storedDigest {
-		return Workflow{}, flowError("workflow TOML が run 作成後に変更されています (state=%s, current=%s)", storedDigest, loaded.Digest)
+		return Workflow{}, flowError("workflow TOML changed after run creation (state=%s, current=%s)", storedDigest, loaded.Digest)
 	}
 	if loaded.Name != stringValue(workflow["name"]) {
-		return Workflow{}, flowError("state の workflow と指定 workflow が一致しません")
+		return Workflow{}, flowError("state workflow does not match the requested workflow")
 	}
 	return loaded, nil
 }
@@ -1703,7 +1703,7 @@ func (engine *FlowEngine) ResumeRun(runID string, requested *Workflow) (map[stri
 		}
 		if requested != nil {
 			if requested.Digest != workflow.Digest || requested.Name != workflow.Name {
-				return flowError("指定 workflow の digest/name が state と一致しません")
+				return flowError("requested workflow digest/name does not match state")
 			}
 			workflow = *requested
 		}
@@ -1768,7 +1768,7 @@ func (engine *FlowEngine) prepareFailedRunForResume(state map[string]any, workfl
 		status = cleanupStatus(state)
 	}
 	if status == "partial" {
-		return flowError("前回の resource cleanup が完了していないため resume できません")
+		return flowError("cannot resume because previous resource cleanup is incomplete")
 	}
 	if status == "completed" {
 		return engine.reprovisionForResume(state, workflow)
@@ -1835,7 +1835,7 @@ func (engine *FlowEngine) CancelRun(runID string) (map[string]any, error) {
 				return nil, requestErr
 			}
 			state["status"] = "cancel_requested"
-			state["message"] = "実行中プロセスにキャンセル要求を書き込みました"
+			state["message"] = "wrote a cancellation request to the running process"
 			return state, nil
 		}
 		return nil, lockErr
@@ -2030,7 +2030,7 @@ func (engine *FlowEngine) closeHerdrResource(args []string, directory string) er
 		if code == "" {
 			code = "command_failed"
 		}
-		return &CommandError{Message: fmt.Sprintf("Herdr resource cleanup が失敗しました: %s", displayCommand(args)), Argv: append([]string{engine.Client.Executable}, args...), ReturnCode: &result.ReturnCode, Code: code, Stdout: result.Stdout, Stderr: result.Stderr}
+		return &CommandError{Message: fmt.Sprintf("Herdr resource cleanup failed: %s", displayCommand(args)), Argv: append([]string{engine.Client.Executable}, args...), ReturnCode: &result.ReturnCode, Code: code, Stdout: result.Stdout, Stderr: result.Stderr}
 	}
 	return nil
 }
@@ -2117,7 +2117,7 @@ func currentWorktreeWorkspaceID(payload any, repo, savedPath, savedBranch string
 	}
 	visit(payload, "")
 	if len(matches) != 1 {
-		return "", flowError("現在の worktree list から保存済み path+branch に一意な workspace id を取得できません")
+		return "", flowError("could not find a unique workspace id for the saved path+branch in the current worktree list")
 	}
 	return matches[0], nil
 }
@@ -2127,7 +2127,7 @@ func (engine *FlowEngine) Cleanup(runID string, allRuns bool, olderThanHours flo
 		return nil, err
 	}
 	if runID == "" && !allRuns {
-		return nil, flowError("cleanup は --run-id または --all が必要です")
+		return nil, flowError("cleanup requires --run-id or --all")
 	}
 	cutoff := float64(time.Now().Unix()) - olderThanHours*3600
 	candidateIDs := []string{}
@@ -2160,7 +2160,7 @@ func (engine *FlowEngine) Cleanup(runID string, allRuns bool, olderThanHours flo
 				return err
 			}
 			if !runTerminal[stringValue(state["status"])] {
-				return flowError("active な run は cleanup できません: %s", currentID)
+				return flowError("cannot clean up active run: %s", currentID)
 			}
 			if runID == "" && nowEpoch(state["updated_at"]) > cutoff {
 				return nil
@@ -2208,7 +2208,7 @@ func (engine *FlowEngine) CleanupResources(runID string, removeWorktree bool) (m
 			return err
 		}
 		if !runTerminal[stringValue(state["status"])] {
-			return flowError("active な run は cleanup できません: %s", runID)
+			return flowError("cannot clean up active run: %s", runID)
 		}
 		return engine.performCleanup(state, removeWorktree)
 	}); err != nil {

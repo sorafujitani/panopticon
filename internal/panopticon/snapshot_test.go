@@ -21,7 +21,7 @@ func TestGitSnapshotUsesStatusAndIgnoresCache(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".cache", "ignored.bin"), []byte("ignored"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "space 名.txt"), []byte("untracked\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "space name.txt"), []byte("untracked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	realGit, err := exec.LookPath("git")
@@ -56,7 +56,7 @@ func TestGitSnapshotUsesStatusAndIgnoresCache(t *testing.T) {
 	if _, ok := snapshot["tracked.txt"]; !ok {
 		t.Fatalf("tracked missing: %#v", snapshot)
 	}
-	if _, ok := snapshot["space 名.txt"]; !ok {
+	if _, ok := snapshot["space name.txt"]; !ok {
 		t.Fatalf("untracked missing: %#v", snapshot)
 	}
 	if _, ok := snapshot[".cache/ignored.bin"]; ok {
@@ -65,8 +65,8 @@ func TestGitSnapshotUsesStatusAndIgnoresCache(t *testing.T) {
 	if !strings.Contains(snapshot["tracked.txt"], "git: M:file:") && !strings.Contains(snapshot["tracked.txt"], "git:M :file:") && !strings.Contains(snapshot["tracked.txt"], "git:") {
 		t.Fatalf("tracked snapshot=%q", snapshot["tracked.txt"])
 	}
-	if !strings.Contains(snapshot["space 名.txt"], "git:??:file:") {
-		t.Fatalf("untracked snapshot=%q", snapshot["space 名.txt"])
+	if !strings.Contains(snapshot["space name.txt"], "git:??:file:") {
+		t.Fatalf("untracked snapshot=%q", snapshot["space name.txt"])
 	}
 }
 
@@ -99,20 +99,20 @@ func TestGitSnapshotDetectsDirtyRechangeRenameAndDelete(t *testing.T) {
 	if diff := snapshotDiff(before, after); strings.Join(diff, ",") != "existing.txt" {
 		t.Fatalf("rechange diff=%v", diff)
 	}
-	runGit(t, root, "mv", "old name.txt", "新しい name.txt")
+	runGit(t, root, "mv", "old name.txt", "new name.txt")
 	runGit(t, root, "rm", "deleted.txt")
 	snapshot, err := snapshotWorktree(root, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := snapshot["新しい name.txt"]; !ok {
+	if _, ok := snapshot["new name.txt"]; !ok {
 		t.Fatalf("rename dest missing: %#v", snapshot)
 	}
 	if _, ok := snapshot["old name.txt"]; !ok {
 		t.Fatalf("rename source missing: %#v", snapshot)
 	}
-	if !strings.Contains(snapshot["新しい name.txt"], "original:old name.txt") {
-		t.Fatalf("rename origin=%q", snapshot["新しい name.txt"])
+	if !strings.Contains(snapshot["new name.txt"], "original:old name.txt") {
+		t.Fatalf("rename origin=%q", snapshot["new name.txt"])
 	}
 	if !strings.Contains(snapshot["old name.txt"], "git:") || !strings.Contains(snapshot["old name.txt"], "deleted") {
 		t.Fatalf("old name snapshot=%q", snapshot["old name.txt"])
@@ -121,7 +121,7 @@ func TestGitSnapshotDetectsDirtyRechangeRenameAndDelete(t *testing.T) {
 		t.Fatalf("deleted snapshot=%q", snapshot["deleted.txt"])
 	}
 	diff := snapshotDiff(after, snapshot)
-	if strings.Join(diff, ",") != "deleted.txt,old name.txt,新しい name.txt" {
+	if strings.Join(diff, ",") != "deleted.txt,new name.txt,old name.txt" {
 		t.Fatalf("rename/delete diff=%v", diff)
 	}
 	info, err = os.Stat(existing)
@@ -137,11 +137,11 @@ func TestGitSnapshotDetectsDirtyRechangeRenameAndDelete(t *testing.T) {
 func TestGitSnapshotParsesCopyRecord(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root, map[string]string{"source.txt": "source\n"})
-	if err := os.WriteFile(filepath.Join(root, "copy 名.txt"), []byte("source\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "copy name.txt"), []byte("source\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	script := "#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write('C  copy 名.txt\\0source.txt\\0'.encode())\n"
+	script := "#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write('C  copy name.txt\\0source.txt\\0'.encode())\n"
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -153,8 +153,8 @@ func TestGitSnapshotParsesCopyRecord(t *testing.T) {
 	if len(snapshot) != 1 {
 		t.Fatalf("snapshot=%#v", snapshot)
 	}
-	if !strings.Contains(snapshot["copy 名.txt"], "original:source.txt") {
-		t.Fatalf("copy snapshot=%q", snapshot["copy 名.txt"])
+	if !strings.Contains(snapshot["copy name.txt"], "original:source.txt") {
+		t.Fatalf("copy snapshot=%q", snapshot["copy name.txt"])
 	}
 }
 
@@ -185,7 +185,7 @@ func TestGitStatusFailureFailsClosed(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	_, err := snapshotWorktree(root, nil, true)
-	if err == nil || !strings.Contains(err.Error(), "git status が失敗") {
+	if err == nil || !strings.Contains(err.Error(), "git status failed") {
 		t.Fatalf("expected git status failure, got %v", err)
 	}
 }

@@ -1,27 +1,27 @@
-あなたは {{ROLE}} 役です。これは reviewer 指摘を直す writer step です。developer と同じ agent/pane を再利用しています。
+You are serving as the {{ROLE}} role. This is a writer step that fixes reviewer findings. It reuses the same agent and pane as the developer.
 
-## 依頼
+## Task
 
 {{TASK}}
 
-## 固定境界
+## Fixed boundaries
 
 - run_id: `{{RUN_ID}}`
 - step_id: `{{STEP_ID}}`
-- 作業対象は専用 worktree のみ: `{{WORKTREE_PATH}}`
+- Work only in the dedicated worktree: `{{WORKTREE_PATH}}`
 - read policy: `{{READ_POLICY}}`
-- write policy: {{WRITE_POLICY}}
-- reviewer の result.json は次の絶対 path: `{{DEPENDENCY_RESULTS}}`
+- write policy: `{{WRITE_POLICY}}`
+- Reviewer's `result.json` is at this absolute path: `{{DEPENDENCY_RESULTS}}`
 
-reviewer の JSON を読み、needs_fixer=true の指摘だけを確認して、必要最小限の修正を worktree に行ってください。main worktree、別 workspace、別 agent を変更せず、commit、merge、push、破壊的な統合はしないでください。対象テストを再実行し、修正したファイルと検証を記録してください。
+Read the reviewer's JSON, address only findings when `needs_fixer=true`, and make the minimum necessary changes in the worktree. Do not modify the main worktree, another workspace, or another agent. Do not commit, merge, push, or perform destructive integration. Rerun the relevant tests and record the changed files and verification.
 
-## 成果物の保存
+## Save the artifact
 
-次の絶対パスに result.json を一時ファイル経由で atomic に保存してください。
+Save `result.json` atomically through a temporary file at the following absolute path.
 RESULT_PATH={{RESULT_PATH}}
 
-## JSON contract（追加キーは許可するが、必須キーを省略しない）
+## JSON contract (additional keys are allowed, but required keys must not be omitted)
 
 {{JSON_CONTRACT}}
 
-artifacts の path は既存の絶対パス、changed_files は worktree 相対パスの配列にしてください。terminal には要約だけを返してください。
+Artifact paths must be absolute paths to existing files, and `changed_files` must be an array of worktree-relative paths. Return only a summary in the terminal.

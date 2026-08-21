@@ -48,7 +48,7 @@ func printJSON(value any) error {
 func positiveSeconds(value string) (float64, error) {
 	seconds, err := strconv.ParseFloat(value, 64)
 	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 {
-		return 0, fmt.Errorf("秒数は正数で指定してください")
+		return 0, fmt.Errorf("seconds must be a positive number")
 	}
 	return seconds, nil
 }
@@ -59,7 +59,7 @@ func intervalSeconds(value string) (float64, error) {
 		return 0, err
 	}
 	if seconds < 0.2 || seconds > 30 {
-		return 0, fmt.Errorf("interval は0.2〜30秒で指定してください")
+		return 0, fmt.Errorf("interval must be between 0.2 and 30 seconds")
 	}
 	return seconds, nil
 }
@@ -144,8 +144,8 @@ func loadPlanInputs(repoValue, workflowValue string, verifyValues []string) (str
 }
 
 func addCommonFlags(fs *flag.FlagSet, global globalFlags) (*string, *string) {
-	stateRoot := fs.String("state-root", global.stateRoot, "run state の保存先")
-	herdrBin := fs.String("herdr-bin", global.herdrBin, "herdr executable のパス")
+	stateRoot := fs.String("state-root", global.stateRoot, "run state directory")
+	herdrBin := fs.String("herdr-bin", global.herdrBin, "path to the Herdr executable")
 	return stateRoot, herdrBin
 }
 
@@ -162,7 +162,7 @@ func taskValue(option, positional string) string {
 	if strings.TrimSpace(positional) != "" {
 		return strings.TrimSpace(positional)
 	}
-	return "指定された依頼を調査・実装・検証する"
+	return "Investigate, implement, and verify the request"
 }
 
 func parseGlobalPrefix(arguments []string) (globalFlags, string, []string, error) {
@@ -175,24 +175,24 @@ func parseGlobalPrefix(arguments []string) (globalFlags, string, []string, error
 		}
 	}
 	if commandIndex < 0 {
-		return global, "", nil, fmt.Errorf("command が必要です")
+		return global, "", nil, fmt.Errorf("a command is required")
 	}
 	for index := 0; index < commandIndex; index++ {
 		switch arguments[index] {
 		case "--state-root":
 			if index+1 >= commandIndex {
-				return global, "", nil, fmt.Errorf("--state-root の値がありません")
+				return global, "", nil, fmt.Errorf("--state-root requires a value")
 			}
 			global.stateRoot = arguments[index+1]
 			index++
 		case "--herdr-bin":
 			if index+1 >= commandIndex {
-				return global, "", nil, fmt.Errorf("--herdr-bin の値がありません")
+				return global, "", nil, fmt.Errorf("--herdr-bin requires a value")
 			}
 			global.herdrBin = arguments[index+1]
 			index++
 		default:
-			return global, "", nil, fmt.Errorf("不明なオプション: %s", arguments[index])
+			return global, "", nil, fmt.Errorf("unknown option: %s", arguments[index])
 		}
 	}
 	return global, arguments[commandIndex], arguments[commandIndex+1:], nil
@@ -243,7 +243,7 @@ func pickRunID(store *RunStore, positional, option string) (string, error) {
 		return "", fmt.Errorf("run list: %w", err)
 	}
 	if len(entries) == 0 {
-		return "", flowError("run がありません")
+		return "", flowError("no runs found")
 	}
 	runID := stringValue(entries[0]["run_id"])
 	return runID, nil
@@ -253,17 +253,17 @@ func pickRunID(store *RunStore, positional, option string) (string, error) {
 func runStart(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("start")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
-	repo := fs.String("repo", "", "対象 repository")
-	workflowValue := fs.String("workflow", "", "workflow 名または TOML path")
+	repo := fs.String("repo", "", "repository")
+	workflowValue := fs.String("workflow", "", "workflow name or TOML path")
 	var verify stringListFlag
-	fs.Var(&verify, "verify", "検証 argv（複数可）")
-	noWorktree := fs.Bool("no-worktree", false, "専用 worktree を作らない明示的な選択")
-	worktreePath := fs.String("worktree-path", "", "専用 worktree の path")
+	fs.Var(&verify, "verify", "verification argv (repeatable)")
+	noWorktree := fs.Bool("no-worktree", false, "explicitly do not create a dedicated worktree")
+	worktreePath := fs.String("worktree-path", "", "dedicated worktree path")
 	branch := fs.String("branch", "", "worktree branch")
 	base := fs.String("base", "", "worktree base ref")
-	foreground := fs.Bool("foreground", false, "このプロセスで完了まで実行")
-	background := fs.Bool("background", true, "orchestrator pane で実行")
-	taskOption := fs.String("task", "", "依頼内容")
+	foreground := fs.Bool("foreground", false, "run to completion in this process")
+	background := fs.Bool("background", true, "run in an orchestrator pane")
+	taskOption := fs.String("task", "", "task")
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
@@ -297,12 +297,12 @@ func runStart(arguments []string, global globalFlags) (int, error) {
 func runDryRun(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("dry-run")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
-	repo := fs.String("repo", "", "対象 repository")
-	workflowValue := fs.String("workflow", "", "workflow 名または TOML path")
+	repo := fs.String("repo", "", "repository")
+	workflowValue := fs.String("workflow", "", "workflow name or TOML path")
 	var verify stringListFlag
-	fs.Var(&verify, "verify", "検証 argv（複数可）")
-	noWorktree := fs.Bool("no-worktree", false, "専用 worktree を作らない明示的な選択")
-	taskOption := fs.String("task", "", "依頼内容")
+	fs.Var(&verify, "verify", "verification argv (repeatable)")
+	noWorktree := fs.Bool("no-worktree", false, "explicitly do not create a dedicated worktree")
+	taskOption := fs.String("task", "", "task")
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
@@ -329,13 +329,13 @@ func runResume(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("resume")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
 	runID := fs.String("run-id", "", "run id")
-	foreground := fs.Bool("foreground", false, "互換のため受理")
+	foreground := fs.Bool("foreground", false, "accepted for compatibility")
 	_ = foreground
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
 	if *runID == "" {
-		err := fmt.Errorf("--run-id は必須です")
+		err := fmt.Errorf("--run-id is required")
 		return 2, err
 	}
 	store, client, err := newRuntime(globalFlags{stateRoot: *stateRoot, herdrBin: *herdrBin})
@@ -396,7 +396,7 @@ func runStatus(arguments []string, global globalFlags, full bool) (int, error) {
 	if full && *step != "" {
 		stepValue := mapValue(stateMap(state, "steps")[*step])
 		if stepValue == nil {
-			return 1, flowError("step が見つかりません: %s", *step)
+			return 1, flowError("step not found: %s", *step)
 		}
 		output = stepValue
 	} else if full {
@@ -439,8 +439,8 @@ func runWait(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("wait")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
 	runIDOption := fs.String("run-id", "", "run id")
-	timeoutValue := fs.String("timeout-seconds", strconv.FormatFloat(DefaultWaitTimeoutSeconds, 'f', -1, 64), "待機タイムアウト")
-	intervalValue := fs.String("interval-seconds", strconv.FormatFloat(DefaultWaitIntervalSeconds, 'f', -1, 64), "state 監視間隔")
+	timeoutValue := fs.String("timeout-seconds", strconv.FormatFloat(DefaultWaitTimeoutSeconds, 'f', -1, 64), "wait timeout")
+	intervalValue := fs.String("interval-seconds", strconv.FormatFloat(DefaultWaitIntervalSeconds, 'f', -1, 64), "state polling interval")
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
@@ -507,7 +507,7 @@ func runCancel(arguments []string, global globalFlags) (int, error) {
 		return 2, err
 	}
 	if len(fs.Args()) == 0 {
-		err := fmt.Errorf("run_id が必要です")
+		err := fmt.Errorf("run_id is required")
 		return 2, err
 	}
 	store, client, err := newRuntime(globalFlags{stateRoot: *stateRoot, herdrBin: *herdrBin})
@@ -532,9 +532,9 @@ func runCleanup(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("cleanup")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
 	runID := fs.String("run-id", "", "run id")
-	allRuns := fs.Bool("all", false, "対象 run 全件")
-	olderThan := fs.Float64("older-than-hours", 24, "更新からの経過時間")
-	removeWorktree := fs.Bool("remove-worktree", false, "専用 worktree も削除")
+	allRuns := fs.Bool("all", false, "all runs")
+	olderThan := fs.Float64("older-than-hours", 24, "hours since last update")
+	removeWorktree := fs.Bool("remove-worktree", false, "also remove the dedicated worktree")
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
@@ -563,7 +563,7 @@ func runCleanupResources(arguments []string, global globalFlags) (int, error) {
 		return 2, err
 	}
 	if *runID == "" {
-		return 2, fmt.Errorf("--run-id は必須です")
+		return 2, fmt.Errorf("--run-id is required")
 	}
 	store, client, err := newRuntime(globalFlags{stateRoot: *stateRoot, herdrBin: *herdrBin})
 	if err != nil {
@@ -585,10 +585,10 @@ func runCleanupResources(arguments []string, global globalFlags) (int, error) {
 func runDoctor(arguments []string, global globalFlags) (int, error) {
 	fs := newFlagSet("doctor")
 	stateRoot, herdrBin := addCommonFlags(fs, global)
-	repo := fs.String("repo", "", "対象 repository")
-	workflowValue := fs.String("workflow", "", "workflow 名または TOML path")
+	repo := fs.String("repo", "", "repository")
+	workflowValue := fs.String("workflow", "", "workflow name or TOML path")
 	var verify stringListFlag
-	fs.Var(&verify, "verify", "検証 argv（複数可）")
+	fs.Var(&verify, "verify", "verification argv (repeatable)")
 	if err := fs.Parse(arguments); err != nil {
 		return 2, err
 	}
@@ -598,7 +598,7 @@ func runDoctor(arguments []string, global globalFlags) (int, error) {
 	}
 	checks := []any{}
 	envOK := client.Environ["HERDR_ENV"] == "1"
-	checks = append(checks, map[string]any{"name": "HERDR_ENV", "ok": envOK, "detail": map[bool]string{true: "1", false: "HERDR_ENV=1 が必要です"}[envOK]})
+	checks = append(checks, map[string]any{"name": "HERDR_ENV", "ok": envOK, "detail": map[bool]string{true: "1", false: "HERDR_ENV=1 is required"}[envOK]})
 	executablePathValue := client.ResolvedExecutable()
 	executableOK := false
 	if info, err := os.Stat(client.Executable); err == nil && !info.IsDir() {
@@ -625,7 +625,7 @@ func runDoctor(arguments []string, global globalFlags) (int, error) {
 		}
 	}
 	versionOK := strings.HasPrefix(version, "herdr 0.8.2")
-	checks = append(checks, map[string]any{"name": "herdr_version", "ok": versionOK, "detail": valueOr(version, "取得できません（0.8.2 を推奨）")})
+	checks = append(checks, map[string]any{"name": "herdr_version", "ok": versionOK, "detail": valueOr(version, "unavailable (0.8.2 recommended)")})
 	if *repo != "" || *workflowValue != "" {
 		repoPath, workflow, verifyCommands, planErr := loadPlanInputs(*repo, *workflowValue, verify)
 		if planErr != nil {

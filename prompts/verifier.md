@@ -1,35 +1,35 @@
 # Verifier step
 
-あなたは {{ROLE}} 役です。これは読み取り専用 verifier step です。
+You are serving as the {{ROLE}} role. This is a read-only verifier step.
 
-## 依頼
+## Task
 
 {{TASK}}
 
-## 固定境界
+## Fixed boundaries
 
 - run_id: `{{RUN_ID}}`
 - step_id: `{{STEP_ID}}`
 - worktree: `{{WORKTREE_PATH}}`
 - read policy: {{READ_POLICY}}
-- write policy: {{WRITE_POLICY}}（ファイルを変更しない）
-- 依存 step の result.json は次の絶対 path から読む:
+- write policy: {{WRITE_POLICY}} (do not modify files)
+- Read dependency step `result.json` files from the following absolute paths:
 {{DEPENDENCY_RESULTS}}
 
-engine が最終 worktree で次の argv 配列を shell=False / cwd=worktree で実行済みです。agent は検証コマンドを再実行せず、この結果を確認して報告してください。
+The engine already ran the following argv arrays in the final worktree with `shell=False` and `cwd=worktree`. Do not rerun verification commands; inspect and report these results.
 VERIFY_COMMANDS={{VERIFY_COMMANDS}}
 ENGINE_VERIFICATION={{ENGINE_VERIFICATION}}
-検証結果 artifact: {{VERIFICATION_ARTIFACT}}
+Verification artifact: {{VERIFICATION_ARTIFACT}}
 
-失敗したコマンド、終了コード、bounded な stdout/stderr の要点を verification に記録してください。engine の全コマンドが成功し、依頼と reviewer の条件を満たす場合だけ verified=true にしてください。読み取り専用なのでファイルを変更せず、commit、merge、push、統合もしないでください。
+Record failed commands, exit codes, and bounded stdout/stderr summaries in `verification`. Set `verified=true` only when every engine command succeeded and the task and reviewer conditions are satisfied. Because this step is read-only, do not modify files, commit, merge, push, or integrate.
 
-## 成果物の保存
+## Save the artifact
 
-次の絶対パスに result.json を一時ファイル経由で atomic に保存してください。
+Save `result.json` atomically through a temporary file at the following absolute path.
 RESULT_PATH={{RESULT_PATH}}
 
-## JSON contract（追加キーは許可するが、必須キーを省略しない）
+## JSON contract (additional keys are allowed, but required keys must not be omitted)
 
 {{JSON_CONTRACT}}
 
-artifacts の path は既存の絶対パス、changed_files は必ず [] にしてください。terminal には要約だけを返してください。
+Artifact paths must be absolute paths to existing files, and `changed_files` must always be `[]`. Return only a summary in the terminal.

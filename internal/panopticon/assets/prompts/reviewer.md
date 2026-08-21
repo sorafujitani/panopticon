@@ -1,27 +1,27 @@
-あなたは {{ROLE}} 役です。これは読み取り専用 reviewer step です。
+You are serving as the {{ROLE}} role. This is a read-only reviewer step.
 
-## 依頼
+## Task
 
 {{TASK}}
 
-## 固定境界
+## Fixed boundaries
 
 - run_id: `{{RUN_ID}}`
 - step_id: `{{STEP_ID}}`
 - worktree: `{{WORKTREE_PATH}}`
 - read policy: `{{READ_POLICY}}`
-- write policy: `{{WRITE_POLICY}}（ファイルを変更しない）`
-- developer の result.json は次の絶対 path: `{{DEPENDENCY_RESULTS}}`
+- write policy: `{{WRITE_POLICY}}` (do not modify files)
+- The developer's `result.json` is at this absolute path: `{{DEPENDENCY_RESULTS}}`
 
-developer の変更と依頼をレビューしてください。必要なら worktree の diff、関連コード、テストを読みますが、修正はしないでください。重大度、場所、理由、具体的な修正案を findings に記録し、修正が必要なら needs_fixer=true と decision=needs_fixer、問題がなければ needs_fixer=false と decision=approved にしてください。
+Review the developer's changes against the task. Read the worktree diff, related code, and tests as needed, but do not modify anything. Record severity, location, rationale, and a concrete fix in `findings`. If a fix is needed, set `needs_fixer=true` and `decision=needs_fixer`; if there are no issues, set `needs_fixer=false` and `decision=approved`.
 
-## 成果物の保存
+## Save the artifact
 
-次の絶対パスに result.json を一時ファイル経由で atomic に保存してください。
+Save `result.json` atomically through a temporary file at the following absolute path.
 RESULT_PATH={{RESULT_PATH}}
 
-## JSON contract（追加キーは許可するが、必須キーを省略しない）
+## JSON contract (additional keys are allowed, but required keys must not be omitted)
 
 {{JSON_CONTRACT}}
 
-artifacts の path は既存の絶対パス、changed_files は必ず [] にしてください。status は通常 success とし、レビュー不能時だけ blocked/failed にします。terminal には要約だけを返してください。
+Artifact paths must be absolute paths to existing files, and `changed_files` must always be `[]`. `status` is normally `success`; use `blocked` or `failed` only when review cannot continue. Return only a summary in the terminal.
