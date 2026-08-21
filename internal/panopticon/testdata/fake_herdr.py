@@ -78,13 +78,13 @@ def _result(prompt: str) -> dict[str, Any]:
     step_id_match = re.search(r"- step_id: `([^`]+)`", prompt)
     role_match = re.search(r"- role: `([^`]+)`", prompt)
     result_path_value = _prompt_value(prompt, "RESULT_PATH=")
-    worktree_value = _prompt_value(prompt, "- 作業対象は専用 worktree のみ: ")
+    worktree_value = _prompt_value(prompt, "- Dedicated worktree only: ")
     if worktree_value:
         worktree_value = worktree_value.strip("`")
     if run_id_match is None or step_id_match is None or role_match is None:
-        raise RuntimeError("fake Herdr が prompt の固定境界を解釈できません")
+        raise RuntimeError("fake Herdr cannot parse the prompt's fixed boundaries")
     if result_path_value is None:
-        raise RuntimeError("fake Herdr が RESULT_PATH を解釈できません")
+        raise RuntimeError("fake Herdr cannot parse RESULT_PATH")
 
     worktree_prompt_value = _prompt_value(prompt, "- worktree: ")
     if worktree_prompt_value:
@@ -316,6 +316,18 @@ def main() -> int:
         result_path_value = _prompt_value(prompt, "RESULT_PATH=")
         if not result_path_value:
             return _emit_error("missing_result_path")
+        if mode in {
+            "delayed-working-before-result",
+            "transient-idle-before-result",
+        }:
+            state.setdefault("agents", {})[target] = {
+                "state": "delayed_working"
+                if mode == "delayed-working-before-result"
+                else "working",
+                "prompt": prompt,
+            }
+            _write_state(state)
+            return 0
         _write_result(Path(result_path_value), _result(prompt))
         lifecycle = (
             "settled" if mode in {"fast-success", "blocked-timeout"} else "working"
@@ -365,11 +377,75 @@ def main() -> int:
         ):
             return _emit_error("timeout")
         if until == "working":
+            if (
+                mode == "delayed-working-before-result"
+                and lifecycle == "delayed_working"
+            ):
+                state.setdefault("agents", {})[target] = {
+                    "state": "working",
+                    "prompt": agent_state.get("prompt")
+                    if isinstance(agent_state, dict)
+                    else None,
+                }
+                _write_state(state)
+                return _emit_error("timeout")
             if lifecycle == "working":
-                state.setdefault("agents", {})[target] = {"state": "working_observed"}
+                state.setdefault("agents", {})[target] = {
+                    "state": "working_observed",
+                    "prompt": agent_state.get("prompt")
+                    if isinstance(agent_state, dict)
+                    else None,
+                }
+                _write_state(state)
+                return _emit({"status": "working"})
+            if mode == "transient-idle-before-result" and lifecycle == "transient_idle":
+                state.setdefault("agents", {})[target] = {
+                    "state": "working_observed_final",
+                    "prompt": agent_state.get("prompt")
+                    if isinstance(agent_state, dict)
+                    else None,
+                }
                 _write_state(state)
                 return _emit({"status": "working"})
             return _emit_error("timeout")
+        if mode == "delayed-working-before-result" and lifecycle == "working_observed":
+            prompt = (
+                agent_state.get("prompt") if isinstance(agent_state, dict) else None
+            )
+            if not isinstance(prompt, str):
+                return _emit_error("missing_result_path")
+            result_path_value = _prompt_value(prompt, "RESULT_PATH=")
+            if not result_path_value:
+                return _emit_error("missing_result_path")
+            _write_result(Path(result_path_value), _result(prompt))
+            state.setdefault("agents", {})[target] = {"state": "settled"}
+            _write_state(state)
+            return _emit({"status": "idle"})
+        if mode == "transient-idle-before-result" and lifecycle == "working_observed":
+            state.setdefault("agents", {})[target] = {
+                "state": "transient_idle",
+                "prompt": agent_state.get("prompt")
+                if isinstance(agent_state, dict)
+                else None,
+            }
+            _write_state(state)
+            return _emit({"status": "idle"})
+        if (
+            mode == "transient-idle-before-result"
+            and lifecycle == "working_observed_final"
+        ):
+            prompt = (
+                agent_state.get("prompt") if isinstance(agent_state, dict) else None
+            )
+            if not isinstance(prompt, str):
+                return _emit_error("missing_result_path")
+            result_path_value = _prompt_value(prompt, "RESULT_PATH=")
+            if not result_path_value:
+                return _emit_error("missing_result_path")
+            _write_result(Path(result_path_value), _result(prompt))
+            state.setdefault("agents", {})[target] = {"state": "settled"}
+            _write_state(state)
+            return _emit({"status": "idle"})
         if lifecycle in {"working", "working_observed", "settled"}:
             status = "blocked" if mode == "blocked" else "idle"
             state.setdefault("agents", {})[target] = {"state": "settled"}
