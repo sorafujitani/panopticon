@@ -1,0 +1,94 @@
+version = 1
+name = "standard"
+
+# 絶対に shell 文字列として連結せず、engine が argv 配列のまま実行する。
+default_verify = [["git", "diff", "--check"]]
+
+[[steps]]
+id = "scout"
+role = "scout"
+kind = "pi"
+depends_on = []
+read_policy = "repo-and-dependencies"
+write_policy = "none"
+timeout_seconds = 900
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/scout.md"
+
+[steps.contract]
+required_fields = ["schema_version", "run_id", "step_id", "role", "status", "summary", "artifacts", "findings"]
+artifact_kinds = ["report"]
+required_list_fields = ["findings"]
+
+[[steps]]
+id = "developer"
+role = "developer"
+kind = "pi"
+depends_on = ["scout"]
+read_policy = "repo-and-dependencies"
+write_policy = "worktree"
+timeout_seconds = 1800
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/developer.md"
+
+[steps.contract]
+required_fields = ["schema_version", "run_id", "step_id", "role", "status", "summary", "artifacts", "changed_files"]
+artifact_kinds = ["change", "report"]
+required_list_fields = ["changed_files"]
+
+[[steps]]
+id = "reviewer"
+role = "reviewer"
+kind = "pi"
+depends_on = ["developer"]
+read_policy = "worktree"
+write_policy = "none"
+timeout_seconds = 1200
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/reviewer.md"
+
+[steps.contract]
+required_fields = ["schema_version", "run_id", "step_id", "role", "status", "summary", "artifacts", "findings", "decision", "needs_fixer"]
+artifact_kinds = ["review"]
+required_boolean_fields = ["needs_fixer"]
+required_list_fields = ["findings"]
+
+[[steps]]
+id = "fixer"
+role = "fixer"
+kind = "pi"
+depends_on = ["reviewer"]
+condition = "reviewer.needs_fixer"
+reuse_agent = "developer"
+read_policy = "worktree"
+write_policy = "worktree"
+timeout_seconds = 1200
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/fixer.md"
+
+[steps.contract]
+required_fields = ["schema_version", "run_id", "step_id", "role", "status", "summary", "artifacts", "changed_files"]
+artifact_kinds = ["change", "report"]
+required_list_fields = ["changed_files"]
+
+[[steps]]
+id = "verifier"
+role = "verifier"
+kind = "pi"
+depends_on = ["reviewer", "fixer"]
+read_policy = "repo-and-dependencies"
+write_policy = "none"
+timeout_seconds = 1200
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/verifier.md"
+
+[steps.contract]
+required_fields = ["schema_version", "run_id", "step_id", "role", "status", "summary", "artifacts", "verified", "verification"]
+artifact_kinds = ["verification"]
+required_boolean_fields = ["verified"]
+required_list_fields = ["verification"]
