@@ -1,15 +1,56 @@
-#!/usr/bin/env python3
-"""Repository-local executable wrapper for Panopticon."""
+#!/bin/sh
+set -eu
 
-from pathlib import Path
-import sys
+umask 077
 
+SOURCE=$0
+case "$SOURCE" in
+  */*) ;;
+  *) SOURCE=$(command -v -- "$SOURCE") ;;
+esac
+while [ -L "$SOURCE" ]; do
+  LINK=$(readlink "$SOURCE")
+  case "$LINK" in
+    /*) SOURCE=$LINK ;;
+    *) SOURCE=$(dirname "$SOURCE")/$LINK ;;
+  esac
+done
+SCRIPT_DIR=$(
+  unset CDPATH
+  cd -- "$(dirname -- "$SOURCE")" && pwd -P
+)
+ROOT_DIR=$(
+  unset CDPATH
+  cd -- "$SCRIPT_DIR/.." && pwd -P
+)
+BINARY="$ROOT_DIR/.panopticon-bin"
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+needs_build=false
+if [ ! -x "$BINARY" ]; then
+  needs_build=true
+elif [ "$ROOT_DIR/go.mod" -nt "$BINARY" ]; then
+  needs_build=true
+else
+  for source_dir in cmd internal workflows prompts; do
+    if [ -d "$ROOT_DIR/$source_dir" ] && find "$ROOT_DIR/$source_dir" -type f -newer "$BINARY" -print -quit | grep -q .; then
+      needs_build=true
+      break
+    fi
+  done
+fi
 
-from panopticon.cli import main
+if [ "$needs_build" = true ]; then
+  temporary="$ROOT_DIR/.panopticon-bin.$$"
+  trap 'rm -f "$temporary"' EXIT HUP INT TERM
+  (
+    unset CDPATH
+    cd -- "$ROOT_DIR"
+    go build -o "$temporary" ./cmd/panopticon
+  )
+  chmod 0700 "$temporary"
+  mv -f -- "$temporary" "$BINARY"
+  trap - EXIT HUP INT TERM
+fi
 
-
-raise SystemExit(main())
+export PANOPTICON_ROOT=${PANOPTICON_ROOT:-$ROOT_DIR}
+exec "$BINARY" "$@"
