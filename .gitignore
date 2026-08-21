@@ -3,7 +3,6 @@
 session.json
 .DS_Store
 
-# Python-generated artifacts
-__pycache__/
-*.py[cod]
-.ruff_cache/
+# Go-generated artifacts
+.panopticon-bin
+.panopticon-bin.*
