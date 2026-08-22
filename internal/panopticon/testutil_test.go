@@ -2,6 +2,7 @@ package panopticon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,17 +11,81 @@ import (
 	"testing"
 )
 
-func fakeHerdrPath(t *testing.T) string {
-	t.Helper()
+var fakeHerdrBinary string
+
+func TestMain(m *testing.M) {
+	binary, err := buildFakeHerdr()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build fake Herdr fixture: %v\n", err)
+		os.Exit(1)
+	}
+	fakeHerdrBinary = binary
+	code := m.Run()
+	_ = os.RemoveAll(filepath.Dir(binary))
+	os.Exit(code)
+}
+
+func buildFakeHerdr() (string, error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		t.Fatal("runtime.Caller failed")
+		return "", fmt.Errorf("runtime.Caller failed")
 	}
-	path := filepath.Join(filepath.Dir(file), "testdata", "fake_herdr.py")
-	if err := os.Chmod(path, 0o755); err != nil {
+	directory, err := os.MkdirTemp("", "panopticon-fake-herdr-")
+	if err != nil {
+		return "", err
+	}
+	binaryName := "fake-herdr"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(directory, binaryName)
+	source := filepath.Join(filepath.Dir(file), "testdata", "fake_herdr")
+	command := exec.Command("go", "build", "-o", binary, source)
+	command.Dir = filepath.Dir(file)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		_ = os.RemoveAll(directory)
+		return "", fmt.Errorf("go build failed: %w\n%s", err, output)
+	}
+	return binary, nil
+}
+
+func fakeHerdrPath(t *testing.T) string {
+	t.Helper()
+	if fakeHerdrBinary == "" {
+		t.Fatal("fake Herdr fixture was not built")
+	}
+	return fakeHerdrBinary
+}
+
+func installFakeGit(t *testing.T, directory, mode string) {
+	t.Helper()
+	binary, err := os.ReadFile(fakeHerdrPath(t))
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
+	gitName := "git"
+	if runtime.GOOS == "windows" {
+		gitName += ".exe"
+	}
+	if err := os.WriteFile(filepath.Join(directory, gitName), binary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_GIT_MODE", mode)
+}
+
+func fakeVerificationCommands(t *testing.T) [][]string {
+	t.Helper()
+	return [][]string{{fakeHerdrPath(t), "--verify-success"}}
+}
+
+func fakeVerificationTOML(t *testing.T) string {
+	t.Helper()
+	encoded, err := json.Marshal(fakeVerificationCommands(t)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "[" + string(encoded) + "]"
 }
 
 func gitEnv() []string {
@@ -103,7 +168,7 @@ func writeSingleStepWorkflow(t *testing.T, root, role, writePolicy, submitKey st
 		}
 		agentLine = "agent_args = " + string(encoded) + "\n"
 	}
-	workflow := "version = 1\nname = \"test\"\ndefault_verify = [[\"python3\", \"-c\", \"pass\"]]\n\n" +
+	workflow := "version = 1\nname = \"test\"\ndefault_verify = " + fakeVerificationTOML(t) + "\n\n" +
 		"[[steps]]\nid = \"step\"\nrole = \"" + role + "\"\nkind = \"codex\"\ndepends_on = []\n" +
 		"read_policy = \"repo-and-dependencies\"\nwrite_policy = \"" + writePolicy + "\"\n" +
 		"timeout_seconds = " + itoa(timeoutSeconds) + "\n" + submitLine + agentLine +
@@ -115,6 +180,48 @@ func writeSingleStepWorkflow(t *testing.T, root, role, writePolicy, submitKey st
 		t.Fatal(err)
 	}
 	loaded, err := LoadWorkflow(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+func withController(t *testing.T, workflow Workflow, maxRetries int) Workflow {
+	t.Helper()
+	root := filepath.Dir(workflow.Path)
+	prompt := `- run_id: ` + "`{{RUN_ID}}`" + `
+- step_id: ` + "`{{STEP_ID}}`" + `
+- role: ` + "`{{ROLE}}`" + `
+- Worktree: ` + "`{{WORKTREE_PATH}}`" + `
+RESULT_PATH={{RESULT_PATH}}
+CONTROL_CONTEXT={{CONTROL_CONTEXT}}
+ALLOWED_ACTIONS={{ALLOWED_ACTIONS}}
+ELIGIBLE_NEXT_STEPS={{ELIGIBLE_NEXT_STEPS}}
+## JSON contract
+{{JSON_CONTRACT}}
+`
+	if err := os.WriteFile(filepath.Join(root, "controller.md"), []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(workflow.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := `
+[controller]
+role = "controller"
+kind = "codex"
+read_policy = "repo-and-dependencies"
+write_policy = "none"
+timeout_seconds = 30
+max_retries = ` + itoa(maxRetries) + `
+template = "controller.md"
+`
+	updated := strings.Replace(string(content), "\n[[steps]]", controller+"\n[[steps]]", 1)
+	if err := os.WriteFile(workflow.Path, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadWorkflow(workflow.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,10 +355,6 @@ func stepState(state map[string]any, id string) map[string]any {
 
 func errorType(state map[string]any) string {
 	return stringValue(mapValue(state["error"])["type"])
-}
-
-func errorCode(state map[string]any) string {
-	return stringValue(mapValue(state["error"])["code"])
 }
 
 func stepErrorCode(state map[string]any, id string) string {

@@ -8,6 +8,7 @@ You are serving as the {{ROLE}} role. This is a writer step that fixes reviewer 
 
 - run_id: `{{RUN_ID}}`
 - step_id: `{{STEP_ID}}`
+- role: `{{ROLE}}`
 - Work only in the dedicated worktree: `{{WORKTREE_PATH}}`
 - read policy: `{{READ_POLICY}}`
 - write policy: `{{WRITE_POLICY}}`

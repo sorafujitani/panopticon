@@ -103,7 +103,7 @@ printf '{"status":"ok"}'
 	runID := "run-partial-resume"
 	state := map[string]any{
 		"run_id": runID, "status": "failed", "repo": repo, "task": "fake task",
-		"workflow": workflow.AsMap(), "verify_commands": []any{[]any{"python3", "-c", "pass"}},
+		"workflow": workflow.AsMap(), "verify_commands": []any{[]any{"true"}},
 		"worktree":     map[string]any{"path": repo, "enabled": false},
 		"orchestrator": map[string]any{},
 		"steps": map[string]any{

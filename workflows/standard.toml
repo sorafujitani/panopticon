@@ -4,6 +4,17 @@ name = "standard"
 # Never concatenate commands into a shell string; the engine executes the argv array directly.
 default_verify = [["git", "diff", "--check"]]
 
+[controller]
+role = "controller"
+kind = "pi"
+read_policy = "repo-and-dependencies"
+write_policy = "none"
+timeout_seconds = 900
+max_retries = 1
+submit_key = "ctrl+enter"
+agent_args = ["--no-extensions"]
+template = "../prompts/controller.md"
+
 [[steps]]
 id = "scout"
 role = "scout"

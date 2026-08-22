@@ -39,7 +39,9 @@ HERDR_ENV=1 panopticon dry-run --repo . "Investigate, implement, and verify the 
 HERDR_ENV=1 panopticon start --repo . "Investigate, implement, and verify the request"
 ```
 
-By default, `start` creates an orchestrator pane and launches `resume` in the background. To run in the current process:
+By default, `start` creates an orchestrator pane and launches `resume` in the background. In the standard workflow, a separate persistent control agent selects each DAG-ready focus step, receives its structured completion envelope, and records the reason for continuing, retrying, blocking, or failing. The Go engine remains authoritative: it validates every decision against the DAG and retry budget before starting focus work.
+
+To run in the current process:
 
 ```sh
 HERDR_ENV=1 panopticon start --foreground --repo . "Implement the request"
@@ -64,7 +66,7 @@ Exit codes remain unchanged: `wait` returns `completed=0`, `blocked=2`, `failed/
 
 ## Workflow and contract
 
-Go validates the `version`, step DAG, `read_policy`, `write_policy`, timeout, `reuse_agent`, `submit_key`, `model`, `effort`, `agent_args`, and result contract in a workflow TOML file. The workflow digest is stored in state and changes are detected when resuming.
+Go validates the `version`, optional `[controller]`, step DAG, `read_policy`, `write_policy`, timeout, `reuse_agent`, `submit_key`, `model`, `effort`, `agent_args`, and result contract in a workflow TOML file. The workflow digest is stored in state and changes are detected when resuming. Workflows without `[controller]` retain the deterministic declaration-order execution used by earlier versions.
 
 ### User configuration
 
@@ -105,6 +107,8 @@ agent_args = ["--no-extensions"]
 ```
 
 `effort` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` and is passed to Pi as `--thinking`. `model` and `effort` are rejected for non-Pi agent kinds. They must not duplicate `--model` or `--thinking` in `agent_args`. A `reuse_agent` step inherits the original agent's model and effort and cannot override them.
+
+The controller has a fixed, fail-closed decision contract. It may return `continue`, `retry`, `block`, or `fail`; `next_step` must be DAG-ready, retries are limited by `controller.max_retries`, and every decision includes a non-empty `reason` and `user_summary`. `status` includes the bounded latest controller decision, while `show` retains the full decision history and focus-step result/error details.
 
 Verification commands are not run as shell strings. Quoted CLI values are split into argv and executed directly, equivalent to `shell=false`.
 

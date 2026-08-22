@@ -6,7 +6,221 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestControllerFocusResultContextIsBoundedAndKeepsJudgmentScalars(t *testing.T) {
+	result := map[string]any{
+		"decision": "needs_fixer", "needs_fixer": true,
+		"findings": []any{map[string]any{"details": strings.Repeat("x", maxControllerFocusResultBytes*2)}},
+	}
+	bounded := boundedControllerFocusResult(result)
+	encoded, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > maxControllerFocusResultBytes {
+		t.Fatalf("bounded result bytes=%d", len(encoded))
+	}
+	value := mapValue(bounded)
+	if stringValue(value["decision"]) != "needs_fixer" || !boolValue(value["needs_fixer"], false) || !boolValue(value["truncated"], false) {
+		t.Fatalf("bounded result=%#v", value)
+	}
+}
+
+func TestControlledWorkflowReusesControllerAndRecordsReasons(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "completed" {
+		t.Fatalf("status=%v error=%v", state["status"], state["error"])
+	}
+	controller := mapValue(state["controller"])
+	decisions, _ := controller["decisions"].([]any)
+	if len(decisions) != 2 || intValue(controller["turns"]) != 2 {
+		t.Fatalf("controller=%#v", controller)
+	}
+	if stringValue(mapValue(decisions[0])["next_step"]) != "step" || mapValue(decisions[1])["next_step"] != nil {
+		t.Fatalf("decisions=%#v", decisions)
+	}
+	calls := filterCalls(herdrCalls(t, fixture.logPath), "agent", "prompt")
+	controllerTarget := stringValue(mapValue(controller["agent"])["target"])
+	controllerPrompts := 0
+	for _, call := range calls {
+		if len(call) > 2 && call[2] == controllerTarget {
+			controllerPrompts++
+		}
+	}
+	if controllerPrompts != 2 {
+		t.Fatalf("controller prompts=%d calls=%#v", controllerPrompts, calls)
+	}
+	compact := mapValue(CompactState(state)["controller"])
+	if stringValue(compact["reason"]) == "" || stringValue(compact["action"]) != "continue" {
+		t.Fatalf("compact controller=%#v", compact)
+	}
+}
+
+func TestStandardControllerRunsFocusFlowAndSkipsUnneededFixer(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := LoadWorkflow(filepath.Join(repositoryRoot(t), "workflows", "standard.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewRunStore(filepath.Join(root, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := currentEnvironment()
+	environment["HERDR_ENV"] = "1"
+	environment["FAKE_HERDR_MODE"] = "success"
+	environment["FAKE_HERDR_LOG"] = filepath.Join(root, "herdr.jsonl")
+	engine := NewFlowEngine(store, NewHerdrClient(fakeHerdrPath(t), environment))
+	state, err := engine.CreateRun(StartOptions{
+		Repo: repo, Workflow: workflow, Task: "standard control test",
+		VerifyCommands: fakeVerificationCommands(t), UseWorktree: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(state["status"]) != "completed" || stringValue(stepState(state, "fixer")["status"]) != "skipped" {
+		t.Fatalf("status=%v steps=%#v error=%#v calls=%#v", state["status"], state["steps"], state["error"], herdrCalls(t, filepath.Join(root, "herdr.jsonl")))
+	}
+	decisions, _ := mapValue(state["controller"])["decisions"].([]any)
+	if len(decisions) != 5 {
+		t.Fatalf("decisions=%#v", decisions)
+	}
+	if stringValue(stepState(state, "verifier")["status"]) != "completed" {
+		t.Fatalf("verifier=%#v", stepState(state, "verifier"))
+	}
+	controllerTarget := stringValue(mapValue(mapValue(state["controller"])["agent"])["target"])
+	foundReviewerResult := false
+	for _, call := range filterCalls(herdrCalls(t, filepath.Join(root, "herdr.jsonl")), "agent", "prompt") {
+		if len(call) > 3 && call[2] == controllerTarget && strings.Contains(call[3], `"decision": "approved"`) && strings.Contains(call[3], `"needs_fixer": false`) {
+			foundReviewerResult = true
+		}
+	}
+	if !foundReviewerResult {
+		t.Fatal("reviewer structured result was not included in controller context")
+	}
+}
+
+func TestControllerReadOnlyViolationFailsClosed(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_CHANGED_FILE"] = "controller-change.txt"
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "failed" || errorType(state) != "controller_changed_read_only" {
+		_, statErr := os.Stat(filepath.Join(fixture.options.Repo, "controller-change.txt"))
+		t.Fatalf("status=%v error=%#v changed_file_stat=%v calls=%#v", state["status"], state["error"], statErr, herdrCalls(t, fixture.logPath))
+	}
+	controller := mapValue(state["controller"])
+	if strings.Join(stringSlice(controller["actual_changed_files"]), ",") != "controller-change.txt" {
+		t.Fatalf("controller changes=%#v", controller["actual_changed_files"])
+	}
+	if !strings.Contains(jsonText(state["events"]), "controller_read_only_violation") || !strings.Contains(jsonText(state["events"]), "controller-change.txt") {
+		t.Fatalf("events=%#v", state["events"])
+	}
+	if stringValue(stepState(state, "step")["status"]) != "pending" {
+		t.Fatalf("focus step=%#v", stepState(state, "step"))
+	}
+}
+
+func TestControllerCanBlockBeforeStartingFocusWork(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_ACTION"] = "block"
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "blocked" || errorType(state) != "controller_decision_blocked" {
+		t.Fatalf("status=%v error=%#v", state["status"], state["error"])
+	}
+	if stringValue(stepState(state, "step")["status"]) != "pending" {
+		t.Fatalf("focus step=%#v", stepState(state, "step"))
+	}
+}
+
+func TestControllerValidatorRejectsEmptyStringForNullableNextStep(t *testing.T) {
+	workflow := Workflow{Controller: &ControllerSpec{Role: "controller", MaxRetries: 1}}
+	state := map[string]any{"run_id": "run-test"}
+	for _, action := range []string{"continue", "block", "fail"} {
+		result := map[string]any{
+			"schema_version": 1, "run_id": "run-test", "step_id": "controller", "role": "controller",
+			"observed_step": "__start__", "observed_attempt": 0,
+			"action": action, "next_step": "", "reason": "reason", "user_summary": "summary",
+		}
+		if _, reason := validateControllerResult(result, state, workflow, nil, []string{}); reason == "" {
+			t.Fatalf("action %s accepted empty next_step", action)
+		}
+	}
+}
+
+func TestControllerRejectsEmptyNextStepInsteadOfNull(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_ACTION"] = "block"
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_NEXT_STEP"] = ""
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "failed" || errorType(state) != "controller_result_invalid" {
+		t.Fatalf("status=%v error=%#v", state["status"], state["error"])
+	}
+	if !strings.Contains(stringValue(mapValue(state["error"])["message"]), "must set next_step to null") {
+		t.Fatalf("error=%#v", state["error"])
+	}
+}
+
+func TestBlockedControllerDecisionCanBeResumed(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_ACTION"] = "block"
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "blocked" {
+		t.Fatalf("status=%v", state["status"])
+	}
+	delete(fixture.engine.Client.Environ, "FAKE_HERDR_CONTROLLER_ACTION")
+	resumed, err := fixture.engine.ResumeRun(stringValue(state["run_id"]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(resumed["status"]) != "completed" {
+		t.Fatalf("status=%v error=%#v", resumed["status"], resumed["error"])
+	}
+	decisions, _ := mapValue(resumed["controller"])["decisions"].([]any)
+	if len(decisions) != 3 {
+		t.Fatalf("decisions=%#v", decisions)
+	}
+}
+
+func TestControllerRetryBudgetFailsClosed(t *testing.T) {
+	fixture := newEngineFixture(t, "failed", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_ACTION_FAILED"] = "retry"
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "failed" || errorType(state) != "controller_result_invalid" {
+		t.Fatalf("status=%v error=%#v", state["status"], state["error"])
+	}
+	if intValue(stepState(state, "step")["attempts"]) != 2 {
+		t.Fatalf("attempts=%v", stepState(state, "step")["attempts"])
+	}
+	if !strings.Contains(stringValue(mapValue(state["error"])["message"]), "retry budget") {
+		t.Fatalf("error=%#v", state["error"])
+	}
+}
+
+func TestControllerRejectsNonEligibleNextStep(t *testing.T) {
+	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
+	fixture.options.Workflow = withController(t, fixture.options.Workflow, 1)
+	fixture.engine.Client.Environ["FAKE_HERDR_CONTROLLER_NEXT_STEP"] = "unknown"
+	state := mustCreate(t, fixture)
+	if stringValue(state["status"]) != "failed" || errorType(state) != "controller_result_invalid" {
+		t.Fatalf("status=%v error=%#v", state["status"], state["error"])
+	}
+	if stringValue(stepState(state, "step")["status"]) != "pending" {
+		t.Fatalf("focus step=%#v", stepState(state, "step"))
+	}
+}
 
 func TestBackgroundLaunchAcceptsEmptyPaneRunStdoutAndPassesHerdrBin(t *testing.T) {
 	fixture := newEngineFixture(t, "success", "developer", "worktree", "", nil, nil, 30)
@@ -46,6 +260,81 @@ func TestSubmitKeyUsesRawPromptAndPaneKeyThenSettles(t *testing.T) {
 	waitCalls := filterCalls(calls, "agent", "wait")
 	if len(waitCalls) != 2 || argAfter(waitCalls[0], "--until") != "working" || containsArg(waitCalls[1], "--until") {
 		t.Fatalf("wait calls: %#v", waitCalls)
+	}
+}
+
+func TestFakeHerdrPendingPromptErrorsDistinguishInvalidAndMissing(t *testing.T) {
+	cases := []struct {
+		name  string
+		state map[string]any
+		want  string
+	}{
+		{
+			name: "invalid prompt",
+			state: map[string]any{
+				"pending_prompts": map[string]any{
+					"agent": map[string]any{
+						"pane_id": "w-fake-agent-pane",
+						"prompt":  map[string]any{"invalid": true},
+					},
+				},
+			},
+			want: "invalid_pending_prompt",
+		},
+		{
+			name:  "no prompt",
+			state: map[string]any{"pending_prompts": map[string]any{}},
+			want:  "no_pending_prompt",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			encoded, err := json.Marshal(item.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			environment := currentEnvironment()
+			environment["HERDR_ENV"] = "1"
+			environment["FAKE_HERDR_STATE"] = statePath
+			client := NewHerdrClient(fakeHerdrPath(t), environment)
+			_, err = client.RunJSON([]string{"pane", "send-keys", "w-fake-agent-pane", "ctrl+enter"}, time.Second)
+			commandErr, ok := err.(*CommandError)
+			if !ok || commandErr.Code != item.want {
+				t.Fatalf("error=%v want code %q", err, item.want)
+			}
+		})
+	}
+}
+
+func TestFakeHerdrRejectsIncompleteAgentPrompt(t *testing.T) {
+	cases := []struct {
+		name   string
+		fields string
+	}{
+		{name: "missing run id", fields: "- step_id: `step`\n- role: `developer`\n"},
+		{name: "missing step id", fields: "- run_id: `run`\n- role: `developer`\n"},
+		{name: "missing role", fields: "- run_id: `run`\n- step_id: `step`\n"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			resultPath := filepath.Join(t.TempDir(), "result.json")
+			prompt := "RESULT_PATH=" + resultPath + "\n" + item.fields
+			environment := currentEnvironment()
+			environment["HERDR_ENV"] = "1"
+			client := NewHerdrClient(fakeHerdrPath(t), environment)
+			_, err := client.RunJSON([]string{"agent", "prompt", "agent-target", prompt}, time.Second)
+			commandErr, ok := err.(*CommandError)
+			if !ok || commandErr.Code != "result_failed" {
+				t.Fatalf("error=%v want result_failed", err)
+			}
+			if _, statErr := os.Stat(resultPath); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid prompt produced result: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -347,7 +636,7 @@ func TestSnapshotFailureFailsClosed(t *testing.T) {
 }
 
 func TestVerifierSuccessUsesEngineVerificationResult(t *testing.T) {
-	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{"python3", "-c", "print('ok')"}}, 30)
+	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{fakeHerdrPath(t), "--verify-success"}}, 30)
 	state := mustCreate(t, fixture)
 	verification := mapValue(stepState(state, "step")["verification"])
 	if stringValue(state["status"]) != "completed" || !boolValue(verification["all_succeeded"], false) {
@@ -363,7 +652,7 @@ func TestVerifierSuccessUsesEngineVerificationResult(t *testing.T) {
 }
 
 func TestVerifierFailureIsNotOverriddenByAgentVerifiedTrue(t *testing.T) {
-	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{"python3", "-c", "import sys; print('o' * 6000); print('e' * 6000, file=sys.stderr); sys.exit(3)"}}, 30)
+	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{fakeHerdrPath(t), "--verify-failure"}}, 30)
 	fixture.engine.Client.Environ["FAKE_HERDR_VERIFIED"] = "true"
 	state := mustCreate(t, fixture)
 	record := mapValue(mapValue(mapValue(stepState(state, "step")["verification"])["commands"].([]any)[0]))
@@ -407,7 +696,7 @@ func TestReviewerDoesNotClaimExistingDeveloperChanges(t *testing.T) {
 	}
 	content := `version = 1
 name = "developer-reviewer"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = ` + fakeVerificationTOML(t) + `
 
 [[steps]]
 id = "developer"

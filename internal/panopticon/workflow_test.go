@@ -26,8 +26,11 @@ func TestStandardWorkflowIsValidated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workflow.Name != "standard" || len(workflow.Steps) != 5 {
+	if workflow.Name != "standard" || len(workflow.Steps) != 5 || workflow.Controller == nil {
 		t.Fatalf("unexpected workflow: %#v", workflow)
+	}
+	if workflow.Controller.Role != "controller" || workflow.Controller.MaxRetries != 1 || workflow.Controller.StepSpec().WritePolicy != "none" {
+		t.Fatalf("unexpected controller: %#v", workflow.Controller)
 	}
 	if workflow.Steps[1].ID != "developer" || workflow.Steps[1].DependsOn[0] != "scout" {
 		t.Fatalf("dependency graph was not parsed: %#v", workflow.Steps)
@@ -110,6 +113,9 @@ func TestStandardWorkflowGraphAndAgentSettings(t *testing.T) {
 	if len(workflow.DefaultVerify) != 1 || strings.Join(workflow.DefaultVerify[0], " ") != "git diff --check" {
 		t.Fatalf("verify=%v", workflow.DefaultVerify)
 	}
+	if workflow.Controller == nil || workflow.Controller.Kind != "pi" || workflow.Controller.SubmitKey != "ctrl+enter" || strings.Join(workflow.Controller.AgentArgs, ",") != "--no-extensions" {
+		t.Fatalf("controller=%#v", workflow.Controller)
+	}
 }
 
 func TestAgentArgsAreParsedSerializedAndChangeDigest(t *testing.T) {
@@ -119,7 +125,7 @@ func TestAgentArgsAreParsedSerializedAndChangeDigest(t *testing.T) {
 	}
 	content := `version = 1
 name = "custom"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "step"
@@ -180,7 +186,7 @@ func TestEmptyAgentArgIsRejected(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, "custom.toml"), []byte(`version = 1
 name = "custom"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "step"
@@ -391,7 +397,7 @@ func TestInvalidWorkflowCycleIsRejected(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, "cycle.toml"), []byte(`version = 1
 name = "cycle"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "first"
@@ -434,11 +440,11 @@ func TestVerifyCLIValueRemainsAnArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands, err := ResolveVerifyCommands([]string{"python3 -m unittest discover -s tests -v"}, map[string]any{}, workflow)
+	commands, err := ResolveVerifyCommands([]string{"go test ./... -run TestExample -count=1"}, map[string]any{}, workflow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"python3", "-m", "unittest", "discover", "-s", "tests", "-v"}
+	want := []string{"go", "test", "./...", "-run", "TestExample", "-count=1"}
 	if len(commands) != 1 || strings.Join(commands[0], "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("commands=%v", commands)
 	}

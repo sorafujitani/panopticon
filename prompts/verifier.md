@@ -10,6 +10,7 @@ You are serving as the {{ROLE}} role. This is a read-only verifier step.
 
 - run_id: `{{RUN_ID}}`
 - step_id: `{{STEP_ID}}`
+- role: `{{ROLE}}`
 - worktree: `{{WORKTREE_PATH}}`
 - read policy: {{READ_POLICY}}
 - write policy: {{WRITE_POLICY}} (do not modify files)
