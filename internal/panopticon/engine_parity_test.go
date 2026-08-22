@@ -49,24 +49,41 @@ func TestSubmitKeyUsesRawPromptAndPaneKeyThenSettles(t *testing.T) {
 	}
 }
 
-func TestAgentArgsArePassedAsArgvToFakeAgentStart(t *testing.T) {
+func TestModelEffortAndAgentArgsArePassedAsArgvToFakeAgentStart(t *testing.T) {
 	args := []string{"--no-extensions", "--profile", "profile with spaces"}
 	fixture := newEngineFixture(t, "success", "developer", "worktree", "", args, nil, 30)
+	fixture.options.Workflow.Steps[0].Kind = "pi"
+	fixture.options.Workflow.Steps[0].Model = "anthropic/claude-sonnet-4"
+	fixture.options.Workflow.Steps[0].Effort = "high"
 	state := mustCreate(t, fixture)
-	if got := stringList(stepState(state, "step")["agent_args"]); strings.Join(got, "\x00") != strings.Join(args, "\x00") {
+	step := stepState(state, "step")
+	if got := stringList(step["agent_args"]); strings.Join(got, "\x00") != strings.Join(args, "\x00") {
 		t.Fatalf("step agent_args=%v", got)
 	}
+	if stringValue(step["model"]) != "anthropic/claude-sonnet-4" || stringValue(step["effort"]) != "high" {
+		t.Fatalf("step model/effort=%v/%v", step["model"], step["effort"])
+	}
 	workflowSteps, _ := stateMap(state, "workflow")["steps"].([]any)
-	if len(workflowSteps) == 0 || strings.Join(stringList(mapValue(workflowSteps[0])["agent_args"]), "\x00") != strings.Join(args, "\x00") {
+	if len(workflowSteps) == 0 {
+		t.Fatal("workflow steps are empty")
+	}
+	workflowStep := mapValue(workflowSteps[0])
+	if strings.Join(stringList(workflowStep["agent_args"]), "\x00") != strings.Join(args, "\x00") {
 		t.Fatalf("workflow agent_args=%#v", workflowSteps)
 	}
-	agent := mapValue(stepState(state, "step")["agent"])
+	if stringValue(workflowStep["model"]) != "anthropic/claude-sonnet-4" || stringValue(workflowStep["effort"]) != "high" {
+		t.Fatalf("workflow model/effort=%v/%v", workflowStep["model"], workflowStep["effort"])
+	}
+	agent := mapValue(step["agent"])
 	expected := "pan-" + lastRunPart(stringValue(state["run_id"])) + "-step"
 	if stringValue(agent["name"]) != expected || stringValue(agent["target"]) != expected {
 		t.Fatalf("agent identity=%#v want %s", agent, expected)
 	}
+	if stringValue(agent["model"]) != "anthropic/claude-sonnet-4" || stringValue(agent["effort"]) != "high" {
+		t.Fatalf("agent model/effort=%v/%v", agent["model"], agent["effort"])
+	}
 	startCalls := filterCalls(herdrCalls(t, fixture.logPath), "agent", "start")
-	want := []string{"agent", "start", expected, "--kind", "codex", "--pane", "w-fake-agent-pane", "--timeout", "30000", "--", "--no-extensions", "--profile", "profile with spaces"}
+	want := []string{"agent", "start", expected, "--kind", "pi", "--pane", "w-fake-agent-pane", "--timeout", "30000", "--", "--model", "anthropic/claude-sonnet-4", "--thinking", "high", "--no-extensions", "--profile", "profile with spaces"}
 	if len(startCalls) != 1 || strings.Join(startCalls[0], "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("start calls=%#v want=%#v", startCalls, want)
 	}
@@ -117,9 +134,22 @@ func TestChildAgentTabReceivesRecursionGuardEnvironment(t *testing.T) {
 	}
 }
 
-func TestResumeRestartsExistingAgentWithTheSameAgentArgs(t *testing.T) {
+func TestResumeRestartsExistingAgentWithTheSameModelEffortAndAgentArgs(t *testing.T) {
 	args := []string{"--no-extensions", "--profile", "profile with spaces"}
 	fixture := newEngineFixture(t, "success", "developer", "worktree", "", args, nil, 30)
+	workflowPath := fixture.options.Workflow.Path
+	content, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = []byte(strings.Replace(string(content), "kind = \"codex\"", "kind = \"pi\"\nmodel = \"anthropic/claude-sonnet-4\"\neffort = \"high\"", 1))
+	if err := os.WriteFile(workflowPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.options.Workflow, err = LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	state := mustCreate(t, fixture)
 	state["status"] = "failed"
 	stepState(state, "step")["status"] = "failed"
@@ -139,8 +169,8 @@ func TestResumeRestartsExistingAgentWithTheSameAgentArgs(t *testing.T) {
 		t.Fatalf("start calls=%#v", startCalls)
 	}
 	tail := startCalls[len(startCalls)-1]
-	got := tail[len(tail)-4:]
-	want := []string{"--", "--no-extensions", "--profile", "profile with spaces"}
+	got := tail[len(tail)-8:]
+	want := []string{"--", "--model", "anthropic/claude-sonnet-4", "--thinking", "high", "--no-extensions", "--profile", "profile with spaces"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("resume argv tail=%v", got)
 	}

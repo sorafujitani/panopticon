@@ -1,6 +1,7 @@
 package panopticon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +131,8 @@ write_policy = "none"
 timeout_seconds = 1
 template = "prompt.md"
 submit_key = "ctrl+enter"
+model = "anthropic/claude-sonnet-4"
+effort = "high"
 agent_args = ["--profile", "profile with spaces"]
 
 [steps.contract]
@@ -154,9 +157,16 @@ artifact_kinds = ["report"]
 	if strings.Join(workflow.Steps[0].AgentArgs, "\x00") != "--profile\x00profile with spaces" {
 		t.Fatalf("args=%v", workflow.Steps[0].AgentArgs)
 	}
-	serialized := stringList(mapValue(workflow.AsMap()["steps"].([]any)[0])["agent_args"])
+	if workflow.Steps[0].Model != "anthropic/claude-sonnet-4" || workflow.Steps[0].Effort != "high" {
+		t.Fatalf("model/effort=%q/%q", workflow.Steps[0].Model, workflow.Steps[0].Effort)
+	}
+	serializedStep := mapValue(workflow.AsMap()["steps"].([]any)[0])
+	serialized := stringList(serializedStep["agent_args"])
 	if strings.Join(serialized, "\x00") != "--profile\x00profile with spaces" {
 		t.Fatalf("serialized=%v", serialized)
+	}
+	if stringValue(serializedStep["model"]) != "anthropic/claude-sonnet-4" || stringValue(serializedStep["effort"]) != "high" {
+		t.Fatalf("serialized model/effort=%v/%v", serializedStep["model"], serializedStep["effort"])
 	}
 	if workflow.Digest == changed.Digest {
 		t.Fatal("digest should change")
@@ -192,6 +202,173 @@ artifact_kinds = ["report"]
 	_, err := LoadWorkflow(filepath.Join(root, "custom.toml"))
 	if err == nil || !strings.Contains(err.Error(), "agent_args") {
 		t.Fatalf("expected agent_args error, got %v", err)
+	}
+}
+
+func TestUserWorkflowOverridesBundledWorkflow(t *testing.T) {
+	configDirectory := t.TempDir()
+	t.Setenv("PANOPTICON_CONFIG_DIR", configDirectory)
+	workflowDirectory := filepath.Join(configDirectory, "workflows")
+	if err := os.MkdirAll(workflowDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDirectory, "prompt.md"), []byte("user prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content := `version = 1
+name = "user-standard"
+default_verify = [["true"]]
+
+[[steps]]
+id = "step"
+role = "developer"
+kind = "pi"
+depends_on = []
+read_policy = "none"
+write_policy = "none"
+timeout_seconds = 1
+template = "prompt.md"
+
+[steps.contract]
+required_fields = ["schema_version"]
+artifact_kinds = ["report"]
+`
+	path := filepath.Join(workflowDirectory, "standard.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveWorkflowPath(t.TempDir(), "standard", repositoryRoot(t), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != path {
+		t.Fatalf("user workflow was not preferred: got %s want %s", resolved, path)
+	}
+	workflow, err := LoadWorkflow(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workflow.Name != "user-standard" || workflow.Steps[0].Template != filepath.Join(workflowDirectory, "prompt.md") {
+		t.Fatalf("workflow=%#v", workflow)
+	}
+}
+
+func TestRepoConfigAliasesOverrideUserConfigAliases(t *testing.T) {
+	workflowConfigs := func(name string) []map[string]any {
+		return []map[string]any{
+			{"workflow": name},
+			{"workflow": map[string]any{"name": name}},
+			{"flow": map[string]any{"name": name}},
+		}
+	}
+	for userIndex, userConfig := range workflowConfigs("personal") {
+		for repoIndex, repoConfig := range workflowConfigs("repository") {
+			got := configuredWorkflowFromSources("", repoConfig, userConfig)
+			if got != "repository" {
+				t.Fatalf("workflow aliases repo=%d user=%d: got %q", repoIndex, userIndex, got)
+			}
+		}
+	}
+
+	verificationConfigs := func(value string) []map[string]any {
+		command := []any{[]any{"echo", value}}
+		return []map[string]any{
+			{"verification": map[string]any{"commands": command}},
+			{"verification": map[string]any{"command": command}},
+			{"verify": map[string]any{"commands": command}},
+			{"verify": map[string]any{"command": command}},
+			{"verification_commands": command},
+			{"verify_commands": command},
+		}
+	}
+	workflow := Workflow{DefaultVerify: [][]string{{"echo", "default"}}}
+	for userIndex, userConfig := range verificationConfigs("user") {
+		for repoIndex, repoConfig := range verificationConfigs("repo") {
+			commands, err := resolveVerifyCommandsFromSources(nil, workflow, repoConfig, userConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(commands) != 1 || strings.Join(commands[0], " ") != "echo repo" {
+				t.Fatalf("verification aliases repo=%d user=%d: commands=%v", repoIndex, userIndex, commands)
+			}
+		}
+	}
+}
+
+func TestWorkflowResolutionDoesNotRequireHomeWithoutUserConfig(t *testing.T) {
+	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "PANOPTICON_CONFIG_DIR"} {
+		t.Setenv(key, "restore-with-test-cleanup")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := LoadUserConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config) != 0 {
+		t.Fatalf("user config=%v", config)
+	}
+	root := repositoryRoot(t)
+	for _, requested := range []string{"standard", filepath.Join(root, "workflows", "standard.toml")} {
+		repo, workflow, _, err := loadPlanInputs(root, requested, nil)
+		if err != nil {
+			t.Fatalf("workflow %q: %v", requested, err)
+		}
+		if repo != root || workflow.Name != "standard" {
+			t.Fatalf("workflow %q resolved to repo=%q workflow=%#v", requested, repo, workflow)
+		}
+	}
+}
+
+func TestInvalidStepModelAndEffortSettingsAreRejected(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prompt.md"), []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := `version = 1
+name = "invalid"
+default_verify = [["true"]]
+
+[[steps]]
+id = "step"
+role = "developer"
+kind = "pi"
+depends_on = []
+read_policy = "none"
+write_policy = "none"
+timeout_seconds = 1
+%s
+template = "prompt.md"
+
+[steps.contract]
+required_fields = ["schema_version"]
+artifact_kinds = ["report"]
+`
+	cases := []struct {
+		name, settings, errorText string
+	}{
+		{"invalid effort", `effort = "extreme"`, "invalid effort"},
+		{"non-pi model", "kind = \"codex\"\nmodel = \"gpt-5\"", "only supported for kind pi"},
+		{"model conflict", "model = \"openai/gpt-5\"\nagent_args = [\"--model=other\"]", "conflicts with --model"},
+		{"effort conflict", "effort = \"high\"\nagent_args = [\"--thinking\", \"low\"]", "conflicts with --thinking"},
+		{"reuse override", "model = \"openai/gpt-5\"\nreuse_agent = \"other\"", "cannot be set with reuse_agent"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			content := fmt.Sprintf(base, item.settings)
+			if item.name == "non-pi model" {
+				content = strings.Replace(content, "kind = \"pi\"\n", "", 1)
+			}
+			path := filepath.Join(root, strings.ReplaceAll(item.name, " ", "-")+".toml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadWorkflow(path)
+			if err == nil || !strings.Contains(err.Error(), item.errorText) {
+				t.Fatalf("expected %q, got %v", item.errorText, err)
+			}
+		})
 	}
 }
 
@@ -301,8 +478,12 @@ func TestDryRunHasNoStateSideEffect(t *testing.T) {
 		t.Fatal("destructive_integration")
 	}
 	for _, raw := range payload["execution"].([]any) {
-		if strings.Join(stringList(mapValue(raw)["agent_args"]), ",") != "--no-extensions" {
-			t.Fatalf("agent_args=%v", mapValue(raw)["agent_args"])
+		step := mapValue(raw)
+		if strings.Join(stringList(step["agent_args"]), ",") != "--no-extensions" {
+			t.Fatalf("agent_args=%v", step["agent_args"])
+		}
+		if step["model"] != nil || step["effort"] != nil {
+			t.Fatalf("unexpected default model/effort=%v/%v", step["model"], step["effort"])
 		}
 	}
 }

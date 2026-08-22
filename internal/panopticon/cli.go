@@ -124,11 +124,16 @@ func loadPlanInputs(repoValue, workflowValue string, verifyValues []string) (str
 	if err != nil {
 		return "", Workflow{}, nil, err
 	}
-	config, err := LoadRepoConfig(repo)
+	userConfig, err := LoadUserConfig()
 	if err != nil {
 		return "", Workflow{}, nil, err
 	}
-	path, err := ResolveWorkflowPath(repo, workflowValue, packageRoot(), config)
+	repoConfig, err := LoadRepoConfig(repo)
+	if err != nil {
+		return "", Workflow{}, nil, err
+	}
+	workflowName := configuredWorkflowFromSources(workflowValue, repoConfig, userConfig)
+	path, err := ResolveWorkflowPath(repo, workflowName, packageRoot(), nil)
 	if err != nil {
 		return "", Workflow{}, nil, err
 	}
@@ -136,7 +141,7 @@ func loadPlanInputs(repoValue, workflowValue string, verifyValues []string) (str
 	if err != nil {
 		return "", Workflow{}, nil, err
 	}
-	verify, err := ResolveVerifyCommands(verifyValues, config, workflow)
+	verify, err := resolveVerifyCommandsFromSources(verifyValues, workflow, repoConfig, userConfig)
 	if err != nil {
 		return "", Workflow{}, nil, err
 	}
