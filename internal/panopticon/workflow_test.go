@@ -26,8 +26,11 @@ func TestStandardWorkflowIsValidated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workflow.Name != "standard" || len(workflow.Steps) != 5 {
+	if workflow.Name != "standard" || len(workflow.Steps) != 5 || workflow.Controller == nil {
 		t.Fatalf("unexpected workflow: %#v", workflow)
+	}
+	if workflow.Controller.Role != "controller" || workflow.Controller.MaxRetries != 1 || workflow.Controller.StepSpec().WritePolicy != "none" {
+		t.Fatalf("unexpected controller: %#v", workflow.Controller)
 	}
 	if workflow.Steps[1].ID != "developer" || workflow.Steps[1].DependsOn[0] != "scout" {
 		t.Fatalf("dependency graph was not parsed: %#v", workflow.Steps)
@@ -109,6 +112,9 @@ func TestStandardWorkflowGraphAndAgentSettings(t *testing.T) {
 	}
 	if len(workflow.DefaultVerify) != 1 || strings.Join(workflow.DefaultVerify[0], " ") != "git diff --check" {
 		t.Fatalf("verify=%v", workflow.DefaultVerify)
+	}
+	if workflow.Controller == nil || workflow.Controller.Kind != "pi" || workflow.Controller.SubmitKey != "ctrl+enter" || strings.Join(workflow.Controller.AgentArgs, ",") != "--no-extensions" {
+		t.Fatalf("controller=%#v", workflow.Controller)
 	}
 }
 

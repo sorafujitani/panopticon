@@ -18,10 +18,11 @@ var stepSuccess = map[string]bool{"completed": true, "skipped": true}
 var stepTerminal = map[string]bool{"completed": true, "skipped": true, "failed": true, "blocked": true, "timed_out": true, "cancelled": true}
 
 const (
-	maxVerificationOutput       = 4000
-	workingWaitMilliseconds     = 5000
-	herdrAgentStartMinTimeoutMS = 3001
-	herdrAgentStartMaxTimeoutMS = 300000
+	maxVerificationOutput         = 4000
+	maxControllerFocusResultBytes = 24 * 1024
+	workingWaitMilliseconds       = 5000
+	herdrAgentStartMinTimeoutMS   = 3001
+	herdrAgentStartMaxTimeoutMS   = 300000
 )
 
 type StartOptions struct {
@@ -228,6 +229,40 @@ func (engine *FlowEngine) snapshotStep(state map[string]any, spec StepSpec, phas
 	return engine.save(state)
 }
 
+func (engine *FlowEngine) snapshotController(state map[string]any, phase string) error {
+	if phase != "before" && phase != "after" {
+		return flowError("unknown controller worktree snapshot phase: %s", phase)
+	}
+	worktree := stateMap(state, "worktree")
+	if worktree == nil {
+		return flowError("state worktree is invalid")
+	}
+	enabled, ok := worktree["enabled"].(bool)
+	if !ok {
+		return flowError("state worktree.enabled is invalid")
+	}
+	controller := mapValue(state["controller"])
+	snapshot, err := snapshotWorktree(stringValue(worktree["path"]), []string{stringValue(state["run_dir"])}, !enabled)
+	if err != nil {
+		return err
+	}
+	controller["worktree_snapshot_"+phase] = map[string]any{"captured_at": utcNow(), "files": snapshot}
+	if phase == "after" {
+		before := mapValue(controller["worktree_snapshot_before"])
+		beforeFiles, validBefore := snapshotFiles(before["files"])
+		if before == nil || !validBefore {
+			return flowError("controller has no worktree before snapshot")
+		}
+		changed := snapshotDiff(beforeFiles, snapshot)
+		items := make([]any, 0, len(changed))
+		for _, item := range changed {
+			items = append(items, item)
+		}
+		controller["actual_changed_files"] = items
+	}
+	return engine.save(state)
+}
+
 func stringMap(value map[string]any) map[string]string {
 	result := map[string]string{}
 	for key, item := range value {
@@ -355,6 +390,16 @@ func (engine *FlowEngine) newState(runID string, options StartOptions, runDir st
 		verify = append(verify, cloneStrings(command))
 	}
 	workflowMap := options.Workflow.AsMap()
+	var controller any
+	if options.Workflow.Controller != nil {
+		controller = map[string]any{
+			"status": "idle", "agent": nil,
+			"result_path": filepath.Join(runDir, "controller", "result.json"),
+			"turns":       0, "decisions": []any{}, "last_decision": nil,
+			"next_step": nil, "error": nil, "actual_changed_files": []any{},
+			"worktree_snapshot_before": nil, "worktree_snapshot_after": nil,
+		}
+	}
 	return map[string]any{
 		"schema_version": int64(1), "run_id": runID, "status": "created", "task": options.Task,
 		"repo": repo, "run_dir": runDir, "created_at": utcNow(), "updated_at": utcNow(), "current_step": nil,
@@ -367,6 +412,7 @@ func (engine *FlowEngine) newState(runID string, options StartOptions, runDir st
 			"cleanup": map[string]any{"status": "pending", "attempts": 0, "errors": []any{}},
 		},
 		"orchestrator": map[string]any{"script_path": nullableString(options.ScriptPath), "background": options.Background},
+		"controller":   controller,
 		"steps":        steps, "events": []any{map[string]any{"at": utcNow(), "event": "created"}},
 	}
 }
@@ -598,6 +644,11 @@ func (engine *FlowEngine) CreateRun(options StartOptions) (map[string]any, error
 	}
 	for _, spec := range options.Workflow.Steps {
 		if err := os.MkdirAll(filepath.Dir(stringValue(mapValue(stateMap(state, "steps")[spec.ID])["result_path"])), 0o700); err != nil {
+			return nil, err
+		}
+	}
+	if controller := mapValue(state["controller"]); controller != nil {
+		if err := os.MkdirAll(filepath.Dir(stringValue(controller["result_path"])), 0o700); err != nil {
 			return nil, err
 		}
 	}
@@ -856,7 +907,11 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		stepState["agent"] = copied
 		return stringValue(copied["target"]), nil
 	}
-	if existing := mapValue(stepState["agent"]); existing != nil && stringValue(existing["target"]) != "" {
+	return engine.ensureAgentResource(state, spec, stepState, spec.ID)
+}
+
+func (engine *FlowEngine) ensureAgentResource(state map[string]any, spec StepSpec, holder map[string]any, resourceKey string) (string, error) {
+	if existing := mapValue(holder["agent"]); existing != nil && stringValue(existing["target"]) != "" {
 		existing["model"] = nullableString(spec.Model)
 		existing["effort"] = nullableString(spec.Effort)
 		existing["agent_args"] = cloneStrings(spec.AgentArgs)
@@ -877,7 +932,7 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		return "", flowError("state has no workspace id")
 	}
 	worktree := stringValue(stateMap(state, "worktree")["path"])
-	payload, err := engine.Client.RunJSON([]string{"tab", "create", "--workspace", workspaceID, "--cwd", worktree, "--label", "flow-" + spec.ID, "--env", "PANOPTICON_CHILD=1", "--no-focus"}, 60*time.Second)
+	payload, err := engine.Client.RunJSON([]string{"tab", "create", "--workspace", workspaceID, "--cwd", worktree, "--label", "flow-" + resourceKey, "--env", "PANOPTICON_CHILD=1", "--no-focus"}, 60*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -889,18 +944,16 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 	if err != nil {
 		resources := stateMap(state, "resources")
 		addOwned(resources, "owned_tabs", tabID)
-		stateMap(resources, "tabs")[spec.ID] = tabID
+		stateMap(resources, "tabs")[resourceKey] = tabID
 		if saveErr := engine.save(state); saveErr != nil {
-			failure := fmt.Errorf("agent partial resource state: %w", saveErr)
-			return "", failure
+			return "", fmt.Errorf("agent partial resource state: %w", saveErr)
 		}
 		return "", err
 	}
 	name := engine.agentName(state, spec)
-	stepState["agent"] = map[string]any{"name": name, "target": name, "kind": spec.Kind, "tab_id": tabID, "pane_id": paneID, "model": nullableString(spec.Model), "effort": nullableString(spec.Effort), "agent_args": cloneStrings(spec.AgentArgs), "started": false}
+	holder["agent"] = map[string]any{"name": name, "target": name, "kind": spec.Kind, "tab_id": tabID, "pane_id": paneID, "model": nullableString(spec.Model), "effort": nullableString(spec.Effort), "agent_args": cloneStrings(spec.AgentArgs), "started": false}
 	resources := stateMap(state, "resources")
-	tabs := stateMap(resources, "tabs")
-	tabs[spec.ID] = tabID
+	stateMap(resources, "tabs")[resourceKey] = tabID
 	addOwned(resources, "owned_tabs", tabID)
 	addPane(resources, paneID)
 	if err := engine.save(state); err != nil {
@@ -909,8 +962,8 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 	if _, err := engine.Client.RunJSON(agentStartArgs(name, spec, paneID), time.Duration(spec.TimeoutSec+30)*time.Second); err != nil {
 		return "", err
 	}
-	stepState["agent"].(map[string]any)["started"] = true
-	engine.appendEvent(state, "agent_started", map[string]any{"step_id": spec.ID, "target": name, "pane_id": paneID})
+	mapValue(holder["agent"])["started"] = true
+	engine.appendEvent(state, "agent_started", map[string]any{"step_id": resourceKey, "target": name, "pane_id": paneID})
 	if err := engine.save(state); err != nil {
 		return "", err
 	}
@@ -1358,8 +1411,8 @@ func (engine *FlowEngine) currentAgentStatus(target string) string {
 	return ExtractStatus(payload)
 }
 
-func (engine *FlowEngine) handleCustomSubmissionTimeout(state map[string]any, spec StepSpec, target string, timeoutErr error) error {
-	result, _ := engine.loadResult(state, spec)
+func (engine *FlowEngine) handleCustomSubmissionTimeout(spec StepSpec, target string, timeoutErr error, loadResult func() (map[string]any, error)) error {
+	result, _ := loadResult()
 	status := engine.currentAgentStatus(target)
 	if status == "blocked" {
 		return &CommandError{Message: fmt.Sprintf("agent %s is blocked", target), Argv: []string{engine.Client.Executable, "agent", "get", target}, Code: "agent_blocked"}
@@ -1370,29 +1423,29 @@ func (engine *FlowEngine) handleCustomSubmissionTimeout(state map[string]any, sp
 	return timeoutErr
 }
 
-func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSpec, target string) error {
+func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSpec, target string, loadResult func() (map[string]any, error)) error {
 	deadline := time.Now().Add(time.Duration(spec.TimeoutSec) * time.Second)
 	workingTimeout := min(spec.TimeoutSec*1000, workingWaitMilliseconds)
 	if _, err := engine.waitAgent(target, "working", workingTimeout); err != nil {
 		if !isTimeoutError(err) {
 			return err
 		}
-		return engine.handleCustomSubmissionTimeout(state, spec, target, err)
+		return engine.handleCustomSubmissionTimeout(spec, target, err, loadResult)
 	}
 
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return engine.handleCustomSubmissionTimeout(state, spec, target, &CommandError{Message: fmt.Sprintf("agent %s timed out while waiting for result.json", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"})
+			return engine.handleCustomSubmissionTimeout(spec, target, &CommandError{Message: fmt.Sprintf("agent %s timed out while waiting for result.json", target), Argv: []string{engine.Client.Executable, "agent", "wait", target}, Code: "timeout"}, loadResult)
 		}
 		_, err := engine.waitAgent(target, "", int(remaining/time.Millisecond))
 		if err != nil {
 			if isTimeoutError(err) {
-				return engine.handleCustomSubmissionTimeout(state, spec, target, err)
+				return engine.handleCustomSubmissionTimeout(spec, target, err, loadResult)
 			}
 			return err
 		}
-		result, _ := engine.loadResult(state, spec)
+		result, _ := loadResult()
 		if result != nil {
 			return nil
 		}
@@ -1403,14 +1456,14 @@ func (engine *FlowEngine) waitCustomSubmission(state map[string]any, spec StepSp
 		_, err = engine.waitAgent(target, "working", int(remaining/time.Millisecond))
 		if err != nil {
 			if isTimeoutError(err) {
-				return engine.handleCustomSubmissionTimeout(state, spec, target, err)
+				return engine.handleCustomSubmissionTimeout(spec, target, err, loadResult)
 			}
 			return err
 		}
 	}
 }
 
-func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, target, prompt string) error {
+func (engine *FlowEngine) submitPromptFor(state map[string]any, spec StepSpec, holder map[string]any, target, prompt string, loadResult func() (map[string]any, error)) error {
 	promptArgs := []string{"agent", "prompt", target, prompt}
 	if spec.SubmitKey == "" {
 		payload, err := engine.Client.RunJSON(append(promptArgs, "--wait", "--timeout", strconv.Itoa(spec.TimeoutSec*1000)), time.Duration(spec.TimeoutSec+30)*time.Second)
@@ -1425,7 +1478,7 @@ func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, targ
 	if err := engine.runRawChecked(promptArgs, time.Duration(spec.TimeoutSec+30)*time.Second, "agent prompt"); err != nil {
 		return err
 	}
-	agent := mapValue(mapValue(stateMap(state, "steps")[spec.ID])["agent"])
+	agent := mapValue(holder["agent"])
 	paneID := stringValue(agent["pane_id"])
 	if paneID == "" {
 		return flowError("step %s: no agent pane for submit_key", spec.ID)
@@ -1433,7 +1486,14 @@ func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, targ
 	if err := engine.runRawChecked([]string{"pane", "send-keys", paneID, spec.SubmitKey}, 30*time.Second, "pane send-keys"); err != nil {
 		return err
 	}
-	return engine.waitCustomSubmission(state, spec, target)
+	return engine.waitCustomSubmission(state, spec, target, loadResult)
+}
+
+func (engine *FlowEngine) submitPrompt(state map[string]any, spec StepSpec, target, prompt string) error {
+	holder := mapValue(stateMap(state, "steps")[spec.ID])
+	return engine.submitPromptFor(state, spec, holder, target, prompt, func() (map[string]any, error) {
+		return engine.loadResult(state, spec)
+	})
 }
 
 func (engine *FlowEngine) executeStep(state map[string]any, spec StepSpec) error {
@@ -1548,8 +1608,432 @@ func (engine *FlowEngine) executeStep(state map[string]any, spec StepSpec) error
 	return engine.applyResult(state, spec, result)
 }
 
+func (engine *FlowEngine) loadControllerResult(state map[string]any) (map[string]any, error) {
+	controller := mapValue(state["controller"])
+	if controller == nil {
+		return nil, nil
+	}
+	value, err := readJSON(stringValue(controller["result_path"]))
+	if err != nil {
+		if _, statErr := os.Stat(stringValue(controller["result_path"])); os.IsNotExist(statErr) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	result, _ := value.(map[string]any)
+	return result, nil
+}
+
+func controllerObserved(step *StepSpec, state map[string]any) (string, int, string) {
+	if step == nil {
+		return "__start__", 0, "start"
+	}
+	stepState := mapValue(stateMap(state, "steps")[step.ID])
+	return step.ID, intValue(stepState["attempts"]), stringValue(stepState["status"])
+}
+
+func boundedControllerFocusResult(result map[string]any) any {
+	if result == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(result)
+	if err == nil && len(encoded) <= maxControllerFocusResultBytes {
+		return cloneMap(result)
+	}
+	bounded := map[string]any{"truncated": true}
+	for _, key := range []string{"schema_version", "run_id", "step_id", "role", "status", "summary", "decision", "needs_fixer", "verified"} {
+		value, exists := result[key]
+		if !exists {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			bounded[key] = truncateText(text, 1000)
+			continue
+		}
+		switch value.(type) {
+		case nil, bool, float64, int64, int, json.Number:
+			bounded[key] = value
+		}
+	}
+	preview := truncateText(string(encoded), maxControllerFocusResultBytes/2)
+	bounded["preview"] = preview
+	for {
+		encodedBounded, marshalErr := json.Marshal(bounded)
+		if marshalErr == nil && len(encodedBounded) <= maxControllerFocusResultBytes {
+			return bounded
+		}
+		runes := []rune(preview)
+		if len(runes) == 0 {
+			delete(bounded, "preview")
+			return bounded
+		}
+		preview = string(runes[:len(runes)/2])
+		bounded["preview"] = preview
+	}
+}
+
+func (engine *FlowEngine) controllerPrompt(state map[string]any, workflow Workflow, observed *StepSpec, eligible []string) (string, error) {
+	spec := workflow.Controller.StepSpec()
+	text, err := readTemplate(spec.Template)
+	if err != nil {
+		return "", fmt.Errorf("controller prompt template: %w", err)
+	}
+	controller := mapValue(state["controller"])
+	observedID, observedAttempt, observedStatus := controllerObserved(observed, state)
+	completion := map[string]any{"step_id": observedID, "attempt": observedAttempt, "status": observedStatus}
+	if observed != nil {
+		stepState := mapValue(stateMap(state, "steps")[observed.ID])
+		result := mapValue(stepState["result"])
+		completion["summary"] = result["summary"]
+		completion["result"] = boundedControllerFocusResult(result)
+		completion["result_path"] = stepState["result_path"]
+		completion["error"] = stepState["error"]
+		completion["verification"] = stepState["verification"]
+	}
+	statuses := map[string]any{}
+	for _, focus := range workflow.Steps {
+		focusState := mapValue(stateMap(state, "steps")[focus.ID])
+		statuses[focus.ID] = map[string]any{"status": focusState["status"], "attempts": focusState["attempts"]}
+	}
+	contextValue := map[string]any{
+		"task": state["task"], "completion": completion, "focus_steps": statuses,
+		"eligible_next_steps": eligible, "max_retries_per_step": workflow.Controller.MaxRetries,
+	}
+	allowed := []string{"block", "fail"}
+	if observed == nil || stepSuccess[observedStatus] {
+		allowed = append([]string{"continue"}, allowed...)
+	} else if observedStatus == "failed" || observedStatus == "blocked" || observedStatus == "timed_out" {
+		allowed = append([]string{"retry"}, allowed...)
+	}
+	contextJSON, _ := json.MarshalIndent(contextValue, "", "  ")
+	eligibleJSON, _ := json.MarshalIndent(eligible, "", "  ")
+	allowedJSON, _ := json.MarshalIndent(allowed, "", "  ")
+	contract := controllerResultContractMap()
+	contract["run_id"] = state["run_id"]
+	contract["step_id"] = "controller"
+	contract["role"] = spec.Role
+	contract["observed_step"] = observedID
+	contract["observed_attempt"] = observedAttempt
+	contractJSON, _ := json.MarshalIndent(contract, "", "  ")
+	replacements := map[string]string{
+		"TASK": stringValue(state["task"]), "RUN_ID": stringValue(state["run_id"]),
+		"STEP_ID": "controller", "ROLE": spec.Role,
+		"WORKTREE_PATH":   filepath.Clean(stringValue(stateMap(state, "worktree")["path"])),
+		"RUN_DIR":         filepath.Clean(stringValue(state["run_dir"])),
+		"RESULT_PATH":     filepath.Clean(stringValue(controller["result_path"])),
+		"CONTROL_CONTEXT": string(contextJSON), "ELIGIBLE_NEXT_STEPS": string(eligibleJSON),
+		"ALLOWED_ACTIONS": string(allowedJSON), "JSON_CONTRACT": string(contractJSON),
+	}
+	for key, value := range replacements {
+		text = strings.ReplaceAll(text, "{{"+key+"}}", value)
+	}
+	return strings.TrimRight(text, "\r\n") + "\n", nil
+}
+
+func (engine *FlowEngine) controllerDecisionCurrent(state map[string]any, observed *StepSpec) bool {
+	last := mapValue(mapValue(state["controller"])["last_decision"])
+	if last == nil {
+		return false
+	}
+	observedID, attempt, _ := controllerObserved(observed, state)
+	return stringValue(last["observed_step"]) == observedID && intValue(last["observed_attempt"]) == attempt
+}
+
+func (engine *FlowEngine) failController(state map[string]any, failureType, message string) error {
+	errorValue := map[string]any{"type": failureType, "message": message}
+	controller := mapValue(state["controller"])
+	controller["status"] = "failed"
+	controller["error"] = errorValue
+	state["status"] = "failed"
+	state["error"] = errorValue
+	engine.appendEvent(state, "controller_failed", map[string]any{"error": errorValue})
+	return engine.save(state)
+}
+
+func validateControllerResult(result map[string]any, state map[string]any, workflow Workflow, observed *StepSpec, eligible []string) (map[string]any, string) {
+	if result == nil {
+		return nil, "controller result.json was not generated"
+	}
+	for _, field := range []string{"schema_version", "run_id", "step_id", "role", "observed_step", "observed_attempt", "action", "next_step", "reason", "user_summary"} {
+		if _, exists := result[field]; !exists {
+			return nil, "required field is missing: " + field
+		}
+	}
+	spec := workflow.Controller.StepSpec()
+	observedID, observedAttempt, observedStatus := controllerObserved(observed, state)
+	if ParseInt64(result["schema_version"]) != 1 || stringValue(result["run_id"]) != stringValue(state["run_id"]) || stringValue(result["step_id"]) != "controller" || stringValue(result["role"]) != spec.Role {
+		return nil, "controller result identity does not match the current run"
+	}
+	if stringValue(result["observed_step"]) != observedID || intValue(result["observed_attempt"]) != observedAttempt {
+		return nil, "controller result does not match the observed focus attempt"
+	}
+	action := stringValue(result["action"])
+	if !containsString([]string{"continue", "retry", "block", "fail"}, action) {
+		return nil, "controller action must be continue, retry, block, or fail"
+	}
+	rawNext := result["next_step"]
+	nextStep := ""
+	if rawNext != nil {
+		var ok bool
+		nextStep, ok = rawNext.(string)
+		if !ok {
+			return nil, "controller next_step must be a string or null"
+		}
+	}
+	if strings.TrimSpace(stringValue(result["reason"])) == "" || strings.TrimSpace(stringValue(result["user_summary"])) == "" {
+		return nil, "controller reason and user_summary must be non-empty strings"
+	}
+	switch action {
+	case "continue":
+		if observed != nil && !stepSuccess[observedStatus] {
+			return nil, "controller cannot continue after an unsuccessful focus step"
+		}
+		if len(eligible) == 0 && rawNext != nil {
+			return nil, "controller next_step must be null when no focus step is eligible"
+		}
+		if len(eligible) > 0 && (nextStep == "" || !containsString(eligible, nextStep)) {
+			return nil, "controller next_step is not an eligible DAG step"
+		}
+	case "retry":
+		if observed == nil || stepSuccess[observedStatus] || !containsString([]string{"failed", "blocked", "timed_out"}, observedStatus) {
+			return nil, "controller can retry only an unsuccessful focus step"
+		}
+		if rawNext == nil || nextStep == "" || nextStep != observed.ID {
+			return nil, "controller retry must target the observed focus step"
+		}
+		if observedAttempt > workflow.Controller.MaxRetries {
+			return nil, "controller retry budget is exhausted"
+		}
+	default:
+		if rawNext != nil {
+			return nil, "controller block/fail decision must set next_step to null"
+		}
+	}
+	return map[string]any{
+		"at": utcNow(), "observed_step": observedID, "observed_attempt": observedAttempt,
+		"action": action, "next_step": nullableString(nextStep),
+		"reason": result["reason"], "user_summary": result["user_summary"],
+	}, ""
+}
+
+func (engine *FlowEngine) invokeController(state map[string]any, workflow Workflow, observed *StepSpec, eligible []string) error {
+	if engine.controllerDecisionCurrent(state, observed) {
+		return nil
+	}
+	controller := mapValue(state["controller"])
+	spec := workflow.Controller.StepSpec()
+	resultPath := stringValue(controller["result_path"])
+	_ = os.Remove(resultPath)
+	controller["status"] = "deciding"
+	controller["turns"] = intValue(controller["turns"]) + 1
+	controller["error"] = nil
+	controller["actual_changed_files"] = []any{}
+	controller["worktree_snapshot_before"] = nil
+	controller["worktree_snapshot_after"] = nil
+	observedID, attempt, _ := controllerObserved(observed, state)
+	engine.appendEvent(state, "controller_started", map[string]any{"observed_step": observedID, "observed_attempt": attempt, "turn": controller["turns"]})
+	if err := engine.save(state); err != nil {
+		return err
+	}
+	if err := engine.snapshotController(state, "before"); err != nil {
+		return engine.failController(state, "controller_snapshot_failed", err.Error())
+	}
+	target, executionErr := engine.ensureAgentResource(state, spec, controller, "controller")
+	if executionErr == nil {
+		var prompt string
+		prompt, executionErr = engine.controllerPrompt(state, workflow, observed, eligible)
+		if executionErr == nil {
+			executionErr = engine.submitPromptFor(state, spec, controller, target, prompt, func() (map[string]any, error) {
+				return engine.loadControllerResult(state)
+			})
+		}
+	}
+	if err := engine.snapshotController(state, "after"); err != nil {
+		return engine.failController(state, "controller_snapshot_failed", err.Error())
+	}
+	actualChanged := stringSlice(controller["actual_changed_files"])
+	if len(actualChanged) > 0 {
+		engine.appendEvent(state, "controller_read_only_violation", map[string]any{"actual_changed_files": actualChanged})
+		return engine.failController(state, "controller_changed_read_only", fmt.Sprintf("read-only controller modified the worktree: %v", actualChanged))
+	}
+	if executionErr != nil {
+		return engine.failController(state, "controller_execution_failed", executionErr.Error())
+	}
+	result, err := engine.loadControllerResult(state)
+	if err != nil {
+		return engine.failController(state, "controller_result_invalid", err.Error())
+	}
+	decision, reason := validateControllerResult(result, state, workflow, observed, eligible)
+	if reason != "" {
+		return engine.failController(state, "controller_result_invalid", reason)
+	}
+	decisions, _ := controller["decisions"].([]any)
+	controller["decisions"] = append(decisions, decision)
+	controller["last_decision"] = decision
+	controller["status"] = "idle"
+	controller["error"] = nil
+	controller["next_step"] = decision["next_step"]
+	engine.appendEvent(state, "controller_decided", cloneMap(decision))
+	action := stringValue(decision["action"])
+	switch action {
+	case "retry":
+		stepState := mapValue(stateMap(state, "steps")[observed.ID])
+		stepState["status"] = "pending"
+		stepState["error"] = nil
+		stepState["result"] = nil
+		state["status"] = "running"
+		state["error"] = nil
+	case "continue":
+		state["status"] = "running"
+		state["error"] = nil
+	case "block":
+		state["status"] = "blocked"
+		state["error"] = map[string]any{"type": "controller_decision_blocked", "message": decision["reason"]}
+	case "fail":
+		state["status"] = "failed"
+		state["error"] = map[string]any{"type": "controller_decision_failed", "message": decision["reason"]}
+	}
+	return engine.save(state)
+}
+
+func (engine *FlowEngine) eligibleControllerSteps(state map[string]any, workflow Workflow) ([]string, error) {
+	changed := false
+	for {
+		skipped := false
+		for _, spec := range workflow.Steps {
+			stepState := mapValue(stateMap(state, "steps")[spec.ID])
+			if stringValue(stepState["status"]) != "pending" {
+				continue
+			}
+			ready, failedDependency := engine.dependencyState(state, spec)
+			if !ready || failedDependency != "" {
+				continue
+			}
+			matches, err := engine.conditionMatches(spec.Condition, state)
+			if err != nil {
+				return nil, err
+			}
+			if !matches {
+				engine.markStep(state, spec, "skipped", map[string]any{"reason": "condition_false"})
+				changed, skipped = true, true
+			}
+		}
+		if !skipped {
+			break
+		}
+	}
+	if changed {
+		if err := engine.save(state); err != nil {
+			return nil, err
+		}
+	}
+	eligible := []string{}
+	for _, spec := range workflow.Steps {
+		if stringValue(mapValue(stateMap(state, "steps")[spec.ID])["status"]) != "pending" {
+			continue
+		}
+		ready, failedDependency := engine.dependencyState(state, spec)
+		if ready && failedDependency == "" {
+			eligible = append(eligible, spec.ID)
+		}
+	}
+	return eligible, nil
+}
+
+func allFocusStepsSucceeded(state map[string]any) bool {
+	for _, raw := range stateMap(state, "steps") {
+		if !stepSuccess[stringValue(mapValue(raw)["status"])] {
+			return false
+		}
+	}
+	return true
+}
+
+func (engine *FlowEngine) executeControlled(state map[string]any, workflow Workflow) error {
+	for {
+		cancelRequested, err := engine.Store.CancelRequested(stringValue(state["run_id"]))
+		if err != nil {
+			return err
+		}
+		if cancelRequested {
+			return engine.markCancelled(state)
+		}
+		for _, spec := range workflow.Steps {
+			stepState := mapValue(stateMap(state, "steps")[spec.ID])
+			if stringValue(stepState["status"]) == "running" {
+				if _, err := engine.recoverRunningStep(state, spec); err != nil {
+					return err
+				}
+			}
+		}
+		var observed *StepSpec
+		current := stringValue(state["current_step"])
+		if current != "" {
+			if spec, exists := workflow.StepMap()[current]; exists {
+				status := stringValue(mapValue(stateMap(state, "steps")[current])["status"])
+				if stepTerminal[status] {
+					copy := spec
+					observed = &copy
+				}
+			}
+		}
+		eligible, err := engine.eligibleControllerSteps(state, workflow)
+		if err != nil {
+			return err
+		}
+		if observed != nil && !engine.controllerDecisionCurrent(state, observed) {
+			if !stepSuccess[stringValue(mapValue(stateMap(state, "steps")[observed.ID])["status"])] {
+				eligible = []string{}
+			}
+			if err := engine.invokeController(state, workflow, observed, eligible); err != nil {
+				return err
+			}
+			if stringValue(state["status"]) == "blocked" || stringValue(state["status"]) == "failed" {
+				return nil
+			}
+			continue
+		}
+		if allFocusStepsSucceeded(state) {
+			state["status"] = "completed"
+			state["current_step"] = nil
+			state["error"] = nil
+			engine.appendEvent(state, "completed", nil)
+			return engine.save(state)
+		}
+		controller := mapValue(state["controller"])
+		if current == "" && mapValue(controller["last_decision"]) == nil {
+			if err := engine.invokeController(state, workflow, nil, eligible); err != nil {
+				return err
+			}
+			if stringValue(state["status"]) == "blocked" || stringValue(state["status"]) == "failed" {
+				return nil
+			}
+			continue
+		}
+		nextStep := stringValue(controller["next_step"])
+		spec, exists := workflow.StepMap()[nextStep]
+		if !exists {
+			return engine.failController(state, "controller_transition_invalid", "controller selected no executable focus step")
+		}
+		stepState := mapValue(stateMap(state, "steps")[nextStep])
+		if stringValue(stepState["status"]) != "pending" {
+			return engine.failController(state, "controller_transition_invalid", "controller selected a focus step that is not pending")
+		}
+		ready, failedDependency := engine.dependencyState(state, spec)
+		if !ready || failedDependency != "" {
+			return engine.failController(state, "controller_transition_invalid", "controller selected a focus step that is not DAG-ready")
+		}
+		if err := engine.executeStep(state, spec); err != nil {
+			return err
+		}
+	}
+}
+
 func (engine *FlowEngine) execute(state map[string]any, workflow Workflow) error {
 	engine.workflow = &workflow
+	if workflow.Controller != nil {
+		return engine.executeControlled(state, workflow)
+	}
 	for {
 		cancelRequested, err := engine.Store.CancelRequested(stringValue(state["run_id"]))
 		if err != nil {
@@ -1715,6 +2199,14 @@ func (engine *FlowEngine) ResumeRun(runID string, requested *Workflow) (map[stri
 				return err
 			}
 		}
+		if workflow.Controller != nil && (status == "failed" || status == "blocked") {
+			controller := mapValue(state["controller"])
+			controller["status"] = "idle"
+			controller["last_decision"] = nil
+			controller["next_step"] = nil
+			controller["error"] = nil
+			engine.appendEvent(state, "controller_reset_for_resume", nil)
+		}
 		state["status"] = "running"
 		engine.appendEvent(state, "resumed", nil)
 		if err := engine.save(state); err != nil {
@@ -1789,6 +2281,9 @@ func (engine *FlowEngine) reprovisionForResume(state map[string]any, workflow Wo
 	resources["cleanup"] = map[string]any{"status": "pending", "attempts": 0, "errors": []any{}}
 	for _, raw := range stateMap(state, "steps") {
 		mapValue(raw)["agent"] = nil
+	}
+	if controller := mapValue(state["controller"]); controller != nil {
+		controller["agent"] = nil
 	}
 	worktree := stateMap(state, "worktree")
 	options := StartOptions{Repo: stringValue(state["repo"]), Workflow: workflow, Task: stringValue(state["task"]), VerifyCommands: commandsFromState(state["verify_commands"]), UseWorktree: boolValue(worktree["enabled"], true), WorktreePath: stringValue(worktree["path"]), Branch: stringValue(worktree["branch"]), Base: stringValue(worktree["base"]), Background: false, ScriptPath: stringValue(stateMap(state, "orchestrator")["script_path"])}

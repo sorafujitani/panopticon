@@ -121,6 +121,48 @@ func writeSingleStepWorkflow(t *testing.T, root, role, writePolicy, submitKey st
 	return loaded
 }
 
+func withController(t *testing.T, workflow Workflow, maxRetries int) Workflow {
+	t.Helper()
+	root := filepath.Dir(workflow.Path)
+	prompt := `- run_id: ` + "`{{RUN_ID}}`" + `
+- step_id: ` + "`{{STEP_ID}}`" + `
+- role: ` + "`{{ROLE}}`" + `
+- Worktree: ` + "`{{WORKTREE_PATH}}`" + `
+RESULT_PATH={{RESULT_PATH}}
+CONTROL_CONTEXT={{CONTROL_CONTEXT}}
+ALLOWED_ACTIONS={{ALLOWED_ACTIONS}}
+ELIGIBLE_NEXT_STEPS={{ELIGIBLE_NEXT_STEPS}}
+## JSON contract
+{{JSON_CONTRACT}}
+`
+	if err := os.WriteFile(filepath.Join(root, "controller.md"), []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(workflow.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := `
+[controller]
+role = "controller"
+kind = "codex"
+read_policy = "repo-and-dependencies"
+write_policy = "none"
+timeout_seconds = 30
+max_retries = ` + itoa(maxRetries) + `
+template = "controller.md"
+`
+	updated := strings.Replace(string(content), "\n[[steps]]", controller+"\n[[steps]]", 1)
+	if err := os.WriteFile(workflow.Path, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadWorkflow(workflow.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
 func itoa(value int) string {
 	if value == 0 {
 		return "0"

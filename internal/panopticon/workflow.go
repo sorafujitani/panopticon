@@ -64,10 +64,30 @@ type StepSpec struct {
 	AgentArgs   []string
 }
 
+type ControllerSpec struct {
+	Role       string
+	Kind       string
+	ReadPolicy string
+	TimeoutSec int
+	Template   string
+	SubmitKey  string
+	AgentArgs  []string
+	MaxRetries int
+}
+
+func (c ControllerSpec) StepSpec() StepSpec {
+	return StepSpec{
+		ID: "controller", Role: c.Role, Kind: c.Kind, ReadPolicy: c.ReadPolicy,
+		WritePolicy: "none", TimeoutSec: c.TimeoutSec, Template: c.Template,
+		SubmitKey: c.SubmitKey, AgentArgs: cloneStrings(c.AgentArgs),
+	}
+}
+
 type Workflow struct {
 	Name          string
 	Version       int
 	Path          string
+	Controller    *ControllerSpec
 	Steps         []StepSpec
 	DefaultVerify [][]string
 	Digest        string
@@ -106,13 +126,32 @@ func (w Workflow) AsMap() map[string]any {
 	for _, command := range w.DefaultVerify {
 		verify = append(verify, cloneStrings(command))
 	}
+	var controller any
+	if w.Controller != nil {
+		controller = map[string]any{
+			"role": w.Controller.Role, "kind": w.Controller.Kind,
+			"read_policy": w.Controller.ReadPolicy, "write_policy": "none",
+			"timeout_seconds": int64(w.Controller.TimeoutSec), "template": w.Controller.Template,
+			"submit_key": nullableString(w.Controller.SubmitKey), "agent_args": cloneStrings(w.Controller.AgentArgs),
+			"max_retries": int64(w.Controller.MaxRetries), "result_contract": controllerResultContractMap(),
+		}
+	}
 	return map[string]any{
 		"name":           w.Name,
 		"version":        int64(w.Version),
 		"path":           w.Path,
 		"digest":         w.Digest,
+		"controller":     controller,
 		"default_verify": verify,
 		"steps":          steps,
+	}
+}
+
+func controllerResultContractMap() map[string]any {
+	return map[string]any{
+		"schema_version":  int64(1),
+		"required_fields": []string{"schema_version", "run_id", "step_id", "role", "observed_step", "observed_attempt", "action", "next_step", "reason", "user_summary"},
+		"actions":         []string{"continue", "retry", "block", "fail"},
 	}
 }
 
@@ -446,6 +485,43 @@ func containsAgentOption(arguments []string, option string) bool {
 	return false
 }
 
+func parseController(value any, workflowPath string) (*ControllerSpec, error) {
+	if value == nil {
+		return nil, nil
+	}
+	table, ok := value.(map[string]any)
+	if !ok {
+		return nil, workflowError("controller must be a table")
+	}
+	if writePolicy, exists := table["write_policy"]; exists && writePolicy != "none" {
+		return nil, workflowError("controller.write_policy must be none")
+	}
+	synthetic := cloneMap(table)
+	synthetic["id"] = "controller"
+	synthetic["depends_on"] = []any{}
+	synthetic["write_policy"] = "none"
+	synthetic["contract"] = map[string]any{
+		"required_fields": []any{"schema_version"},
+		"artifact_kinds":  []any{"report"},
+	}
+	step, err := parseStep(synthetic, workflowPath)
+	if err != nil {
+		return nil, fmt.Errorf("workflow controller: %w", err)
+	}
+	maxRetries := 1
+	if raw, exists := table["max_retries"]; exists {
+		maxRetries, err = asInt(raw)
+		if err != nil || maxRetries < 0 || maxRetries > 10 {
+			return nil, workflowError("controller.max_retries must be an integer from 0 to 10")
+		}
+	}
+	return &ControllerSpec{
+		Role: step.Role, Kind: step.Kind, ReadPolicy: step.ReadPolicy,
+		TimeoutSec: step.TimeoutSec, Template: step.Template, SubmitKey: step.SubmitKey,
+		AgentArgs: step.AgentArgs, MaxRetries: maxRetries,
+	}, nil
+}
+
 func asInt(value any) (int, error) {
 	switch typed := value.(type) {
 	case int64:
@@ -573,11 +649,18 @@ func LoadWorkflow(path string) (Workflow, error) {
 	if !ok || len(rawSteps) == 0 {
 		return Workflow{}, workflowError("workflow.steps must contain at least one table")
 	}
+	controller, err := parseController(data["controller"], path)
+	if err != nil {
+		return Workflow{}, fmt.Errorf("workflow load: %w", err)
+	}
 	steps := make([]StepSpec, 0, len(rawSteps))
 	for _, rawStep := range rawSteps {
 		step, err := parseStep(rawStep, path)
 		if err != nil {
 			return Workflow{}, fmt.Errorf("workflow load: %w", err)
+		}
+		if controller != nil && step.ID == "controller" {
+			return Workflow{}, workflowError("step id controller is reserved when using the control plane")
 		}
 		steps = append(steps, step)
 	}
@@ -593,7 +676,7 @@ func LoadWorkflow(path string) (Workflow, error) {
 	}
 	hash := sha256.Sum256(content)
 	digest := hex.EncodeToString(hash[:])
-	return Workflow{Name: name, Version: version, Path: path, Steps: steps, DefaultVerify: defaultVerify, Digest: digest}, nil
+	return Workflow{Name: name, Version: version, Path: path, Controller: controller, Steps: steps, DefaultVerify: defaultVerify, Digest: digest}, nil
 }
 
 func LoadRepoConfig(repo string) (map[string]any, error) {

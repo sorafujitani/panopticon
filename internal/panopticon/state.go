@@ -177,6 +177,18 @@ func CompactState(state map[string]any) map[string]any {
 	} else {
 		worktreePath = state["worktree"]
 	}
+	var controller any
+	if rawController, ok := state["controller"].(map[string]any); ok {
+		last := mapValue(rawController["last_decision"])
+		controller = map[string]any{
+			"status":       compactValue(rawController["status"]),
+			"action":       compactValue(last["action"]),
+			"next_step":    compactValue(last["next_step"]),
+			"reason":       boundedText(last["reason"], compactMaxStepTextLength, true),
+			"user_summary": boundedText(last["user_summary"], compactMaxStepTextLength, true),
+			"error":        compactError(rawController["error"], compactMaxStepTextLength),
+		}
+	}
 	payload := map[string]any{
 		"run_id":       compactValue(state["run_id"]),
 		"status":       compactValue(state["status"]),
@@ -186,6 +198,9 @@ func CompactState(state map[string]any) map[string]any {
 		"steps":        steps,
 		"error":        compactError(state["error"], compactMaxRunErrorLength),
 		"updated_at":   compactValue(state["updated_at"]),
+	}
+	if controller != nil {
+		payload["controller"] = controller
 	}
 	return fitCompactPayload(payload)
 }
@@ -232,6 +247,11 @@ func fitCompactPayload(payload map[string]any) map[string]any {
 				}
 				changed = shrinkTextField(step, "summary") || changed
 				changed = shrinkTextField(step, "error") || changed
+			}
+		}
+		if controller, ok := payload["controller"].(map[string]any); ok {
+			for _, field := range []string{"reason", "user_summary", "error"} {
+				changed = shrinkTextField(controller, field) || changed
 			}
 		}
 		if changed {

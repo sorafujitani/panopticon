@@ -81,10 +81,47 @@ def _result(prompt: str) -> dict[str, Any]:
     worktree_value = _prompt_value(prompt, "- Dedicated worktree only: ")
     if worktree_value:
         worktree_value = worktree_value.strip("`")
-    if run_id_match is None or step_id_match is None or role_match is None:
+    if run_id_match is None or step_id_match is None:
         raise RuntimeError("fake Herdr cannot parse the prompt's fixed boundaries")
     if result_path_value is None:
         raise RuntimeError("fake Herdr cannot parse RESULT_PATH")
+    role_value = role_match.group(1) if role_match is not None else step_id_match.group(1)
+
+    if role_value == "controller":
+        controller_changed_file = os.environ.get("FAKE_HERDR_CONTROLLER_CHANGED_FILE")
+        controller_worktree = _prompt_value(prompt, "- Worktree: ")
+        if controller_changed_file and controller_worktree:
+            relative = Path(controller_changed_file)
+            if not relative.is_absolute() and relative.parts and ".." not in relative.parts:
+                target = Path(controller_worktree.strip("`")) / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("fake controller change\n", encoding="utf-8")
+        context = _prompt_json(prompt, "CONTROL_CONTEXT=")
+        eligible = _prompt_json(prompt, "ELIGIBLE_NEXT_STEPS=")
+        allowed = _prompt_json(prompt, "ALLOWED_ACTIONS=")
+        completion = context.get("completion", {}) if isinstance(context, dict) else {}
+        action = os.environ.get("FAKE_HERDR_CONTROLLER_ACTION")
+        if completion.get("status") in {"failed", "blocked", "timed_out"}:
+            action = os.environ.get("FAKE_HERDR_CONTROLLER_ACTION_FAILED", action)
+        if not action:
+            action = allowed[0] if isinstance(allowed, list) and allowed else "fail"
+        next_step = os.environ.get("FAKE_HERDR_CONTROLLER_NEXT_STEP")
+        if next_step is None and action == "retry":
+            next_step = completion.get("step_id")
+        elif next_step is None and action == "continue" and isinstance(eligible, list) and eligible:
+            next_step = eligible[0]
+        return {
+            "schema_version": 1,
+            "run_id": run_id_match.group(1),
+            "step_id": "controller",
+            "role": "controller",
+            "observed_step": completion.get("step_id", "__start__"),
+            "observed_attempt": completion.get("attempt", 0),
+            "action": action,
+            "next_step": next_step,
+            "reason": os.environ.get("FAKE_HERDR_CONTROLLER_REASON", f"fake {action}"),
+            "user_summary": f"fake controller {action}",
+        }
 
     worktree_prompt_value = _prompt_value(prompt, "- worktree: ")
     if worktree_prompt_value:
@@ -95,7 +132,7 @@ def _result(prompt: str) -> dict[str, Any]:
     artifact.write_text("fake artifact\n", encoding="utf-8")
 
     changed_files: list[str] = []
-    role_key = role_match.group(1).upper()
+    role_key = role_value.upper()
     changed_value = os.environ.get(
         f"FAKE_HERDR_CHANGED_FILES_{role_key}",
         os.environ.get("FAKE_HERDR_CHANGED_FILES"),
@@ -135,7 +172,7 @@ def _result(prompt: str) -> dict[str, Any]:
     if status not in {"success", "blocked", "failed"}:
         status = "success"
     verified = True
-    if role_match.group(1) == "verifier":
+    if role_value == "verifier":
         override = os.environ.get("FAKE_HERDR_VERIFIED")
         if override is not None:
             verified = override.lower() == "true"
@@ -149,7 +186,7 @@ def _result(prompt: str) -> dict[str, Any]:
         "schema_version": 1,
         "run_id": run_id_match.group(1),
         "step_id": step_id_match.group(1),
-        "role": role_match.group(1),
+        "role": role_value,
         "status": status,
         "summary": f"fake {status}",
         "artifacts": [
