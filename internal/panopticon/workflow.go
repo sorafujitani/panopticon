@@ -59,6 +59,8 @@ type StepSpec struct {
 	Condition   string
 	ReuseAgent  string
 	SubmitKey   string
+	Model       string
+	Effort      string
 	AgentArgs   []string
 }
 
@@ -94,6 +96,8 @@ func (w Workflow) AsMap() map[string]any {
 			"condition":       nullableString(step.Condition),
 			"reuse_agent":     nullableString(step.ReuseAgent),
 			"submit_key":      nullableString(step.SubmitKey),
+			"model":           nullableString(step.Model),
+			"effort":          nullableString(step.Effort),
 			"agent_args":      cloneStrings(step.AgentArgs),
 			"contract":        step.Contract.AsMap(),
 		})
@@ -120,6 +124,11 @@ func nullableString(value string) any {
 }
 
 var stepIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,47}$`)
+
+var supportedPiEfforts = map[string]bool{
+	"off": true, "minimal": true, "low": true, "medium": true,
+	"high": true, "xhigh": true, "max": true,
+}
 
 var supportedAgentKinds = map[string]bool{
 	"pi": true, "claude": true, "codex": true, "gemini": true, "cursor": true,
@@ -395,11 +404,46 @@ func parseStep(value any, workflowPath string) (StepSpec, error) {
 	if err != nil {
 		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
 	}
+	model, err := optionalString("model")
+	if err != nil {
+		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
+	}
+	effort, err := optionalString("effort")
+	if err != nil {
+		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
+	}
+	if effort != "" {
+		effort = strings.ToLower(effort)
+		if !supportedPiEfforts[effort] {
+			return StepSpec{}, workflowError("step %s: invalid effort: %s", id, effort)
+		}
+	}
+	if (model != "" || effort != "") && kind != "pi" {
+		return StepSpec{}, workflowError("step %s: model and effort are only supported for kind pi", id)
+	}
+	if reuseAgent != "" && (model != "" || effort != "") {
+		return StepSpec{}, workflowError("step %s: model and effort cannot be set with reuse_agent; the reused agent keeps its original settings", id)
+	}
 	agentArgs, err := asAgentArgs(table["agent_args"], "step "+id+".agent_args")
 	if err != nil {
 		return StepSpec{}, fmt.Errorf("workflow step: %w", err)
 	}
-	return StepSpec{ID: id, Role: role, Kind: kind, DependsOn: depends, ReadPolicy: readPolicy, WritePolicy: writePolicy, TimeoutSec: timeout, Template: template, Contract: contract, Condition: condition, ReuseAgent: reuseAgent, SubmitKey: submitKey, AgentArgs: agentArgs}, nil
+	if model != "" && containsAgentOption(agentArgs, "--model") {
+		return StepSpec{}, workflowError("step %s: model conflicts with --model in agent_args", id)
+	}
+	if effort != "" && containsAgentOption(agentArgs, "--thinking") {
+		return StepSpec{}, workflowError("step %s: effort conflicts with --thinking in agent_args", id)
+	}
+	return StepSpec{ID: id, Role: role, Kind: kind, DependsOn: depends, ReadPolicy: readPolicy, WritePolicy: writePolicy, TimeoutSec: timeout, Template: template, Contract: contract, Condition: condition, ReuseAgent: reuseAgent, SubmitKey: submitKey, Model: model, Effort: effort, AgentArgs: agentArgs}, nil
+}
+
+func containsAgentOption(arguments []string, option string) bool {
+	for _, argument := range arguments {
+		if argument == option || strings.HasPrefix(argument, option+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func asInt(value any) (int, error) {
@@ -553,19 +597,68 @@ func LoadWorkflow(path string) (Workflow, error) {
 }
 
 func LoadRepoConfig(repo string) (map[string]any, error) {
-	path := filepath.Join(repo, ".panopticon.toml")
+	return loadConfigFile(filepath.Join(repo, ".panopticon.toml"), "repo .panopticon.toml")
+}
+
+func userConfigDir() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("PANOPTICON_CONFIG_DIR")); configured != "" {
+		if strings.HasPrefix(configured, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", workflowError("cannot resolve PANOPTICON_CONFIG_DIR: %v", err)
+			}
+			configured = filepath.Join(home, strings.TrimPrefix(configured, "~/"))
+		}
+		absolute, err := filepath.Abs(configured)
+		if err != nil {
+			return "", workflowError("cannot resolve PANOPTICON_CONFIG_DIR: %v", err)
+		}
+		return filepath.Clean(absolute), nil
+	}
+	base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// User config is optional. Explicit PANOPTICON_CONFIG_DIR errors above,
+			// but a missing default home must not break repo or absolute workflows.
+			return "", nil
+		}
+		base = filepath.Join(home, ".config")
+	}
+	if !filepath.IsAbs(base) {
+		absolute, err := filepath.Abs(base)
+		if err != nil {
+			return "", workflowError("cannot resolve user config directory: %v", err)
+		}
+		base = absolute
+	}
+	return filepath.Clean(filepath.Join(base, "panopticon")), nil
+}
+
+func loadConfigFile(path, label string) (map[string]any, error) {
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return map[string]any{}, nil
 	}
 	if err != nil {
-		return nil, workflowError("cannot read repo .panopticon.toml: %v", err)
+		return nil, workflowError("cannot read %s: %v", label, err)
 	}
 	raw, err := ParseTOML(string(content))
 	if err != nil {
-		return nil, workflowError("invalid repo .panopticon.toml: %v", err)
+		return nil, workflowError("invalid %s: %v", label, err)
 	}
 	return raw, nil
+}
+
+func LoadUserConfig() (map[string]any, error) {
+	directory, err := userConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	if directory == "" {
+		return map[string]any{}, nil
+	}
+	return loadConfigFile(filepath.Join(directory, "config.toml"), "user config.toml")
 }
 
 func configuredWorkflowName(config map[string]any) string {
@@ -580,6 +673,18 @@ func configuredWorkflowName(config map[string]any) string {
 			if value, ok := table[key].(string); ok && strings.TrimSpace(value) != "" {
 				return strings.TrimSpace(value)
 			}
+		}
+	}
+	return ""
+}
+
+func configuredWorkflowFromSources(requested string, configs ...map[string]any) string {
+	if strings.TrimSpace(requested) != "" {
+		return requested
+	}
+	for _, config := range configs {
+		if configured := configuredWorkflowName(config); configured != "" {
+			return configured
 		}
 	}
 	return ""
@@ -610,22 +715,35 @@ func ResolveWorkflowPath(repo, requested, packageRoot string, config map[string]
 	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(requestedPath, "~/") {
 		requestedPath = filepath.Join(home, strings.TrimPrefix(requestedPath, "~/"))
 	}
+	configDirectory, err := userConfigDir()
+	if err != nil {
+		return "", err
+	}
 	candidates := []string{}
 	if filepath.IsAbs(requestedPath) {
 		candidates = append(candidates, requestedPath)
 	} else if strings.HasSuffix(requestedPath, ".toml") || strings.ContainsAny(requestedPath, `/\\`) {
 		candidates = append(candidates, filepath.Join(repo, requestedPath), filepath.Join(repo, ".panopticon", requestedPath))
+		if configDirectory != "" {
+			candidates = append(candidates, filepath.Join(configDirectory, requestedPath))
+		}
 		if packageRoot != "" {
 			candidates = append(candidates, filepath.Join(packageRoot, requestedPath))
 		}
 		if filepath.Dir(requestedPath) == "." {
 			candidates = append(candidates, filepath.Join(repo, "workflows", requestedPath), filepath.Join(repo, ".panopticon", "workflows", requestedPath))
+			if configDirectory != "" {
+				candidates = append(candidates, filepath.Join(configDirectory, "workflows", requestedPath))
+			}
 			if packageRoot != "" {
 				candidates = append(candidates, filepath.Join(packageRoot, "workflows", requestedPath))
 			}
 		}
 	} else {
 		candidates = append(candidates, filepath.Join(repo, "workflows", requestedPath+".toml"), filepath.Join(repo, ".panopticon", "workflows", requestedPath+".toml"))
+		if configDirectory != "" {
+			candidates = append(candidates, filepath.Join(configDirectory, "workflows", requestedPath+".toml"))
+		}
 		if packageRoot != "" {
 			candidates = append(candidates, filepath.Join(packageRoot, "workflows", requestedPath+".toml"))
 		}
@@ -690,6 +808,27 @@ func ResolveVerifyCommands(cliValues []string, config map[string]any, workflow W
 	}
 	if len(configured) > 0 {
 		return configured, nil
+	}
+	return workflow.DefaultVerify, nil
+}
+
+func resolveVerifyCommandsFromSources(cliValues []string, workflow Workflow, configs ...map[string]any) ([][]string, error) {
+	if len(cliValues) > 0 {
+		return ResolveVerifyCommands(cliValues, nil, workflow)
+	}
+	for index, config := range configs {
+		configured, err := commandsFromConfig(config)
+		if err != nil {
+			labels := []string{"repository", "user"}
+			label := "configuration"
+			if index < len(labels) {
+				label = labels[index]
+			}
+			return nil, fmt.Errorf("%s verification: %w", label, err)
+		}
+		if len(configured) > 0 {
+			return configured, nil
+		}
 	}
 	return workflow.DefaultVerify, nil
 }

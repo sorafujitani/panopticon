@@ -29,7 +29,7 @@ go build -o .panopticon-bin ./cmd/panopticon
 HERDR_ENV=1 ./.panopticon-bin doctor --repo .
 ```
 
-The standard workflow and prompts are embedded in the binary, so `standard` can also be resolved from the installation directory. If the target repository contains `workflows/<name>.toml` or `.panopticon.toml`, that configuration takes precedence.
+The standard workflow and prompts are embedded in the binary as a fallback, so `standard` works without setup. Workflows can instead live in the user's config directory and do not need to be committed to each target repository. Repository configuration still takes precedence.
 
 ## Quick start
 
@@ -64,7 +64,47 @@ Exit codes remain unchanged: `wait` returns `completed=0`, `blocked=2`, `failed/
 
 ## Workflow and contract
 
-Go validates the `version`, step DAG, `read_policy`, `write_policy`, timeout, `reuse_agent`, `submit_key`, `agent_args`, and result contract in `workflows/standard.toml`. The workflow digest is stored in state and changes are detected when resuming.
+Go validates the `version`, step DAG, `read_policy`, `write_policy`, timeout, `reuse_agent`, `submit_key`, `model`, `effort`, `agent_args`, and result contract in a workflow TOML file. The workflow digest is stored in state and changes are detected when resuming.
+
+### User configuration
+
+The user config directory is `${XDG_CONFIG_HOME:-~/.config}/panopticon` (or `PANOPTICON_CONFIG_DIR` when set). A workflow can be selected globally without adding files to the target repository:
+
+```text
+~/.config/panopticon/
+├── config.toml
+├── prompts/
+│   └── personal.md
+└── workflows/
+    └── personal.toml
+```
+
+```toml
+# ~/.config/panopticon/config.toml
+workflow = "personal"
+
+[verification]
+commands = [["go", "test", "./..."], ["go", "vet", "./..."]]
+```
+
+In `workflows/personal.toml`, prompt paths are relative to that workflow file, so `template = "../prompts/personal.md"` resolves inside the user config directory. A bare workflow name is searched in the target repository, then the user config directory, then the Panopticon installation; `standard` finally falls back to the embedded workflow. CLI options override repository configuration, and repository `.panopticon.toml` overrides user `config.toml`.
+
+### Per-step model and effort
+
+For `kind = "pi"`, each step may select its model and Pi thinking level directly:
+
+```toml
+[[steps]]
+id = "developer"
+role = "developer"
+kind = "pi"
+model = "anthropic/claude-sonnet-4"
+effort = "high"
+agent_args = ["--no-extensions"]
+# ...remaining step fields and contract...
+```
+
+`effort` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` and is passed to Pi as `--thinking`. `model` and `effort` are rejected for non-Pi agent kinds. They must not duplicate `--model` or `--thinking` in `agent_args`. A `reuse_agent` step inherits the original agent's model and effort and cannot override them.
 
 Verification commands are not run as shell strings. Quoted CLI values are split into argv and executed directly, equivalent to `shell=false`.
 
@@ -75,7 +115,7 @@ panopticon start \
   "TASK"
 ```
 
-The resolution order is CLI `--verify`, the repository's `.panopticon.toml`, then the workflow's `default_verify`. Example repository configuration:
+The resolution order is CLI `--verify`, the repository's `.panopticon.toml`, user `config.toml`, then the workflow's `default_verify`. Example repository configuration:
 
 ```toml
 workflow = "standard"

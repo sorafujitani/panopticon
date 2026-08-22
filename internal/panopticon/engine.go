@@ -342,6 +342,7 @@ func (engine *FlowEngine) newState(runID string, options StartOptions, runDir st
 			"read_policy": spec.ReadPolicy, "write_policy": spec.WritePolicy,
 			"timeout_seconds": spec.TimeoutSec, "condition": nullableString(spec.Condition),
 			"reuse_agent": nullableString(spec.ReuseAgent), "submit_key": nullableString(spec.SubmitKey),
+			"model": nullableString(spec.Model), "effort": nullableString(spec.Effort),
 			"agent_args": cloneStrings(spec.AgentArgs), "contract": spec.Contract.AsMap(),
 			"status": "pending", "attempts": 0, "result_path": filepath.Join(stepDir, "result.json"),
 			"agent": nil, "started_at": nil, "finished_at": nil, "error": nil, "result": nil,
@@ -817,11 +818,23 @@ func (engine *FlowEngine) agentName(state map[string]any, spec StepSpec) string 
 	return name
 }
 
+func stepAgentArgs(spec StepSpec) []string {
+	arguments := make([]string, 0, len(spec.AgentArgs)+4)
+	if spec.Model != "" {
+		arguments = append(arguments, "--model", spec.Model)
+	}
+	if spec.Effort != "" {
+		arguments = append(arguments, "--thinking", spec.Effort)
+	}
+	return append(arguments, spec.AgentArgs...)
+}
+
 func agentStartArgs(name string, spec StepSpec, paneID string) []string {
 	arguments := []string{"agent", "start", name, "--kind", spec.Kind, "--pane", paneID, "--timeout", strconv.Itoa(clampAgentStartTimeoutMS(spec.TimeoutSec * 1000))}
-	if len(spec.AgentArgs) > 0 {
+	agentArguments := stepAgentArgs(spec)
+	if len(agentArguments) > 0 {
 		arguments = append(arguments, "--")
-		arguments = append(arguments, spec.AgentArgs...)
+		arguments = append(arguments, agentArguments...)
 	}
 	return arguments
 }
@@ -844,6 +857,8 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		return stringValue(copied["target"]), nil
 	}
 	if existing := mapValue(stepState["agent"]); existing != nil && stringValue(existing["target"]) != "" {
+		existing["model"] = nullableString(spec.Model)
+		existing["effort"] = nullableString(spec.Effort)
 		existing["agent_args"] = cloneStrings(spec.AgentArgs)
 		if !boolValue(existing["started"], true) {
 			paneID := stringValue(existing["pane_id"])
@@ -882,7 +897,7 @@ func (engine *FlowEngine) ensureAgent(state map[string]any, spec StepSpec) (stri
 		return "", err
 	}
 	name := engine.agentName(state, spec)
-	stepState["agent"] = map[string]any{"name": name, "target": name, "kind": spec.Kind, "tab_id": tabID, "pane_id": paneID, "agent_args": cloneStrings(spec.AgentArgs), "started": false}
+	stepState["agent"] = map[string]any{"name": name, "target": name, "kind": spec.Kind, "tab_id": tabID, "pane_id": paneID, "model": nullableString(spec.Model), "effort": nullableString(spec.Effort), "agent_args": cloneStrings(spec.AgentArgs), "started": false}
 	resources := stateMap(state, "resources")
 	tabs := stateMap(resources, "tabs")
 	tabs[spec.ID] = tabID
@@ -2203,7 +2218,7 @@ func (engine *FlowEngine) CleanupResources(runID string, removeWorktree bool) (m
 func (engine *FlowEngine) dryRunPayload(repo string, workflow Workflow, task string, verify [][]string, useWorktree bool) map[string]any {
 	steps := []any{}
 	for _, spec := range workflow.Steps {
-		steps = append(steps, map[string]any{"step_id": spec.ID, "role": spec.Role, "depends_on": spec.DependsOn, "kind": spec.Kind, "read_policy": spec.ReadPolicy, "write_policy": spec.WritePolicy, "timeout_seconds": spec.TimeoutSec, "reuse_agent": nullableString(spec.ReuseAgent), "agent_args": spec.AgentArgs, "condition": nullableString(spec.Condition), "result_contract": spec.Contract.AsMap()})
+		steps = append(steps, map[string]any{"step_id": spec.ID, "role": spec.Role, "depends_on": spec.DependsOn, "kind": spec.Kind, "read_policy": spec.ReadPolicy, "write_policy": spec.WritePolicy, "timeout_seconds": spec.TimeoutSec, "reuse_agent": nullableString(spec.ReuseAgent), "model": nullableString(spec.Model), "effort": nullableString(spec.Effort), "agent_args": spec.AgentArgs, "condition": nullableString(spec.Condition), "result_contract": spec.Contract.AsMap()})
 	}
 	verifyJSON := []any{}
 	for _, command := range verify {
