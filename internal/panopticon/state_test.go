@@ -215,7 +215,7 @@ func TestCompactStateCollapsesUnknownErrorDictToMessage(t *testing.T) {
 
 func finishedProcessPID(t *testing.T) int64 {
 	t.Helper()
-	command := exec.Command("true")
+	command := exec.Command(fakeHerdrPath(t), "--verify-success")
 	if err := command.Run(); err != nil {
 		t.Fatal(err)
 	}

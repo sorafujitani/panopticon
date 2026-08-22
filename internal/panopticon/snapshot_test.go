@@ -142,10 +142,7 @@ func TestGitSnapshotParsesCopyRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	script := "#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write('C  copy name.txt\\0source.txt\\0'.encode())\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	installFakeGit(t, bin, "copy")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	snapshot, err := snapshotWorktree(root, nil, false)
 	if err != nil {
@@ -165,10 +162,7 @@ func TestGitSnapshotRejectsDirectoryStatusPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	script := "#!/usr/bin/env python3\nimport sys\nsys.stdout.buffer.write(b' M submodule\\0')\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	installFakeGit(t, bin, "directory")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	_, err := snapshotWorktree(root, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "directory") {

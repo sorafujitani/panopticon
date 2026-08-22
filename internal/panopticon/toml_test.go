@@ -13,7 +13,7 @@ version = 1
 name = "custom"
 "display.name" = "quoted dotted"
 default_verify = [
-  ["python3", "-c", "pass"],
+  ["go", "test", "./..."],
 ]
 
 [[steps]]
@@ -36,7 +36,7 @@ contract = { required_fields = ["schema_version"], artifact_kinds = ["report"] }
 		t.Fatalf("quoted dotted key: %#v", root["display.name"])
 	}
 	verify := root["default_verify"].([]any)
-	if len(verify) != 1 || strings.Join(stringList(verify[0]), " ") != "python3 -c pass" {
+	if len(verify) != 1 || strings.Join(stringList(verify[0]), " ") != "go test ./..." {
 		t.Fatalf("default_verify=%#v", verify)
 	}
 	steps := root["steps"].([]any)
@@ -55,7 +55,7 @@ func TestLoadWorkflowAcceptsMultilinePythonCompatibleTOML(t *testing.T) {
 	content := `version = 1
 name = "custom"
 default_verify = [
-  ["python3", "-c", "pass"],
+  ["go", "test", "./..."],
 ]
 
 [[steps]]
@@ -84,7 +84,7 @@ artifact_kinds = [
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workflow.Name != "custom" || len(workflow.DefaultVerify) != 1 || strings.Join(workflow.DefaultVerify[0], " ") != "python3 -c pass" {
+	if workflow.Name != "custom" || len(workflow.DefaultVerify) != 1 || strings.Join(workflow.DefaultVerify[0], " ") != "go test ./..." {
 		t.Fatalf("workflow=%#v", workflow)
 	}
 	if strings.Join(workflow.Steps[0].Contract.RequiredFields, ",") != "schema_version" {

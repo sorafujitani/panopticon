@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestControllerFocusResultContextIsBoundedAndKeepsJudgmentScalars(t *testing.T) {
@@ -80,7 +81,7 @@ func TestStandardControllerRunsFocusFlowAndSkipsUnneededFixer(t *testing.T) {
 	engine := NewFlowEngine(store, NewHerdrClient(fakeHerdrPath(t), environment))
 	state, err := engine.CreateRun(StartOptions{
 		Repo: repo, Workflow: workflow, Task: "standard control test",
-		VerifyCommands: [][]string{{"python3", "-c", "pass"}}, UseWorktree: false,
+		VerifyCommands: fakeVerificationCommands(t), UseWorktree: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +260,81 @@ func TestSubmitKeyUsesRawPromptAndPaneKeyThenSettles(t *testing.T) {
 	waitCalls := filterCalls(calls, "agent", "wait")
 	if len(waitCalls) != 2 || argAfter(waitCalls[0], "--until") != "working" || containsArg(waitCalls[1], "--until") {
 		t.Fatalf("wait calls: %#v", waitCalls)
+	}
+}
+
+func TestFakeHerdrPendingPromptErrorsDistinguishInvalidAndMissing(t *testing.T) {
+	cases := []struct {
+		name  string
+		state map[string]any
+		want  string
+	}{
+		{
+			name: "invalid prompt",
+			state: map[string]any{
+				"pending_prompts": map[string]any{
+					"agent": map[string]any{
+						"pane_id": "w-fake-agent-pane",
+						"prompt":  map[string]any{"invalid": true},
+					},
+				},
+			},
+			want: "invalid_pending_prompt",
+		},
+		{
+			name:  "no prompt",
+			state: map[string]any{"pending_prompts": map[string]any{}},
+			want:  "no_pending_prompt",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			encoded, err := json.Marshal(item.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(statePath, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			environment := currentEnvironment()
+			environment["HERDR_ENV"] = "1"
+			environment["FAKE_HERDR_STATE"] = statePath
+			client := NewHerdrClient(fakeHerdrPath(t), environment)
+			_, err = client.RunJSON([]string{"pane", "send-keys", "w-fake-agent-pane", "ctrl+enter"}, time.Second)
+			commandErr, ok := err.(*CommandError)
+			if !ok || commandErr.Code != item.want {
+				t.Fatalf("error=%v want code %q", err, item.want)
+			}
+		})
+	}
+}
+
+func TestFakeHerdrRejectsIncompleteAgentPrompt(t *testing.T) {
+	cases := []struct {
+		name   string
+		fields string
+	}{
+		{name: "missing run id", fields: "- step_id: `step`\n- role: `developer`\n"},
+		{name: "missing step id", fields: "- run_id: `run`\n- role: `developer`\n"},
+		{name: "missing role", fields: "- run_id: `run`\n- step_id: `step`\n"},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			resultPath := filepath.Join(t.TempDir(), "result.json")
+			prompt := "RESULT_PATH=" + resultPath + "\n" + item.fields
+			environment := currentEnvironment()
+			environment["HERDR_ENV"] = "1"
+			client := NewHerdrClient(fakeHerdrPath(t), environment)
+			_, err := client.RunJSON([]string{"agent", "prompt", "agent-target", prompt}, time.Second)
+			commandErr, ok := err.(*CommandError)
+			if !ok || commandErr.Code != "result_failed" {
+				t.Fatalf("error=%v want result_failed", err)
+			}
+			if _, statErr := os.Stat(resultPath); !os.IsNotExist(statErr) {
+				t.Fatalf("invalid prompt produced result: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -560,7 +636,7 @@ func TestSnapshotFailureFailsClosed(t *testing.T) {
 }
 
 func TestVerifierSuccessUsesEngineVerificationResult(t *testing.T) {
-	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{"python3", "-c", "print('ok')"}}, 30)
+	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{fakeHerdrPath(t), "--verify-success"}}, 30)
 	state := mustCreate(t, fixture)
 	verification := mapValue(stepState(state, "step")["verification"])
 	if stringValue(state["status"]) != "completed" || !boolValue(verification["all_succeeded"], false) {
@@ -576,7 +652,7 @@ func TestVerifierSuccessUsesEngineVerificationResult(t *testing.T) {
 }
 
 func TestVerifierFailureIsNotOverriddenByAgentVerifiedTrue(t *testing.T) {
-	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{"python3", "-c", "import sys; print('o' * 6000); print('e' * 6000, file=sys.stderr); sys.exit(3)"}}, 30)
+	fixture := newEngineFixture(t, "success", "verifier", "none", "", nil, [][]string{{fakeHerdrPath(t), "--verify-failure"}}, 30)
 	fixture.engine.Client.Environ["FAKE_HERDR_VERIFIED"] = "true"
 	state := mustCreate(t, fixture)
 	record := mapValue(mapValue(mapValue(stepState(state, "step")["verification"])["commands"].([]any)[0]))
@@ -620,7 +696,7 @@ func TestReviewerDoesNotClaimExistingDeveloperChanges(t *testing.T) {
 	}
 	content := `version = 1
 name = "developer-reviewer"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = ` + fakeVerificationTOML(t) + `
 
 [[steps]]
 id = "developer"

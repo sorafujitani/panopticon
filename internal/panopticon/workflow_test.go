@@ -125,7 +125,7 @@ func TestAgentArgsAreParsedSerializedAndChangeDigest(t *testing.T) {
 	}
 	content := `version = 1
 name = "custom"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "step"
@@ -186,7 +186,7 @@ func TestEmptyAgentArgIsRejected(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, "custom.toml"), []byte(`version = 1
 name = "custom"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "step"
@@ -397,7 +397,7 @@ func TestInvalidWorkflowCycleIsRejected(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, "cycle.toml"), []byte(`version = 1
 name = "cycle"
-default_verify = [["python3", "-c", "pass"]]
+default_verify = [["true"]]
 
 [[steps]]
 id = "first"
@@ -440,11 +440,11 @@ func TestVerifyCLIValueRemainsAnArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commands, err := ResolveVerifyCommands([]string{"python3 -m unittest discover -s tests -v"}, map[string]any{}, workflow)
+	commands, err := ResolveVerifyCommands([]string{"go test ./... -run TestExample -count=1"}, map[string]any{}, workflow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"python3", "-m", "unittest", "discover", "-s", "tests", "-v"}
+	want := []string{"go", "test", "./...", "-run", "TestExample", "-count=1"}
 	if len(commands) != 1 || strings.Join(commands[0], "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("commands=%v", commands)
 	}
