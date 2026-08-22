@@ -132,7 +132,7 @@ func (engine *FlowEngine) save(state map[string]any) error {
 
 func resultContract(spec StepSpec, runID string) map[string]any {
 	kinds := strings.Join(spec.Contract.ArtifactKinds, ", ")
-	return map[string]any{
+	contract := map[string]any{
 		"schema_version": int64(1),
 		"run_id":         runID,
 		"step_id":        spec.ID,
@@ -148,6 +148,16 @@ func resultContract(spec StepSpec, runID string) map[string]any {
 		"tests":         []string{"description of verification performed"},
 		"contract":      spec.Contract.AsMap(),
 	}
+	if spec.Role == "verifier" {
+		contract["verification"] = []any{map[string]any{
+			"argv":       []string{"git", "diff", "--check"},
+			"returncode": int64(0),
+			"stdout":     "",
+			"stderr":     "",
+			"success":    true,
+		}}
+	}
+	return contract
 }
 
 func errorPayload(err error) map[string]any {

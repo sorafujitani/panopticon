@@ -22,7 +22,13 @@ VERIFY_COMMANDS={{VERIFY_COMMANDS}}
 ENGINE_VERIFICATION={{ENGINE_VERIFICATION}}
 Verification artifact: {{VERIFICATION_ARTIFACT}}
 
-Record failed commands, exit codes, and bounded stdout/stderr summaries in `verification`. Set `verified=true` only when every engine command succeeded and the task and reviewer conditions are satisfied. Because this step is read-only, do not modify files, commit, merge, push, or integrate.
+Record failed commands, exit codes, and bounded stdout/stderr summaries in `verification`. The `verification` field MUST be a JSON array of per-command result objects (one entry per verify command, with `argv`, `returncode`, `stdout`, `stderr`, and `success` keys), for example:
+
+```json
+{"verification": [{"argv": ["git", "diff", "--check"], "returncode": 0, "stdout": "", "stderr": "", "success": true}]}
+```
+
+`ENGINE_VERIFICATION` above is engine context only — do not copy its object shape (`all_succeeded`/`commands`) into the `verification` field. Set `verified=true` only when every engine command succeeded and the task and reviewer conditions are satisfied. Because this step is read-only, do not modify files, commit, merge, push, or integrate.
 
 ## Save the artifact
 
